@@ -11,6 +11,7 @@ use vpn_ipc::{ClientCommand, ClientMessage, WireConfig, WireState};
 
 struct VpnState {
     writer: Option<tokio::io::WriteHalf<NamedPipeClient>>,
+    reader: Option<tokio::task::JoinHandle<()>>,
     status: WireState,
 }
 
@@ -19,7 +20,7 @@ struct VpnState {
 // hand-written `Default` that picks the initial "Disconnected" status.
 impl Default for VpnState {
     fn default() -> Self {
-        Self { writer: None, status: WireState::Disconnected }
+        Self { writer: None, reader: None, status: WireState::Disconnected }
     }
 }
 
@@ -37,6 +38,22 @@ async fn vpn_connect(
     state: State<'_, Shared>,
     args: ConnectArgs,
 ) -> Result<(), String> {
+    // Tear down any prior connection before starting a new one: if
+    // `vpn_connect` is called again while a previous connection is live
+    // (double-click, or reconnect after an error without a clean
+    // disconnect), the old writer must be dropped so the old pipe closes,
+    // and the old reader task must be aborted so it does not keep racing
+    // the new one on `status` / `vpn://state`. The lock is released before
+    // the `.await` on `connect_with_spawn` below so we don't hold it across
+    // the connect+UAC wait.
+    {
+        let mut st = state.lock().await;
+        st.writer.take();
+        if let Some(old_reader) = st.reader.take() {
+            old_reader.abort();
+        }
+    }
+
     let client = pipe::connect_with_spawn().await.map_err(|e| e.to_string())?;
     let (mut writer, mut lines) = pipe::split(client);
 
@@ -50,12 +67,10 @@ async fn vpn_connect(
     .await
     .map_err(|e| e.to_string())?;
 
-    state.lock().await.writer = Some(writer);
-
     // Relay helper messages to the frontend + track status.
     let app2 = app.clone();
     let shared2: Shared = state.inner().clone();
-    tokio::spawn(async move {
+    let reader = tokio::spawn(async move {
         while let Ok(Some(line)) = lines.next_line().await {
             if let Ok(msg) = serde_json::from_str::<ClientMessage>(&line) {
                 if let ClientMessage::State(s) = &msg {
@@ -71,6 +86,12 @@ async fn vpn_connect(
         shared2.lock().await.status = WireState::Disconnected;
         let _ = app2.emit("vpn://state", &ClientMessage::State(WireState::Disconnected));
     });
+
+    {
+        let mut st = state.lock().await;
+        st.writer = Some(writer);
+        st.reader = Some(reader);
+    }
 
     Ok(())
 }
