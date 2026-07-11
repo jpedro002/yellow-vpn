@@ -43,6 +43,8 @@ struct VpnState {
     writer: Option<tokio::io::WriteHalf<NamedPipeClient>>,
     reader: Option<tokio::task::JoinHandle<()>>,
     status: WireState,
+    /// Name of the profile the current/last connect used, for the notification.
+    current_profile: Option<String>,
 }
 
 // `WireState` is a foreign type (from vpn-ipc), so we cannot `impl Default for
@@ -50,7 +52,12 @@ struct VpnState {
 // hand-written `Default` that picks the initial "Disconnected" status.
 impl Default for VpnState {
     fn default() -> Self {
-        Self { writer: None, reader: None, status: WireState::Disconnected }
+        Self {
+            writer: None,
+            reader: None,
+            status: WireState::Disconnected,
+            current_profile: None,
+        }
     }
 }
 
@@ -60,6 +67,8 @@ type Shared = Arc<Mutex<VpnState>>;
 struct ConnectArgs {
     config: WireConfig,
     password: String,
+    #[serde(rename = "profileName")]
+    profile_name: String,
 }
 
 #[tauri::command]
@@ -68,6 +77,10 @@ async fn vpn_connect(
     state: State<'_, Shared>,
     args: ConnectArgs,
 ) -> Result<(), String> {
+    // Record which profile this connect is for, so the reader task can name it
+    // in the "Connected" notification (works on both the reuse and fresh paths).
+    state.lock().await.current_profile = Some(args.profile_name.clone());
+
     // The elevated helper serves exactly one pipe connection for its whole
     // lifetime (create -> connect -> serve; EOF on that pipe makes the
     // helper process exit). So a healthy existing connection must be
@@ -128,6 +141,26 @@ async fn vpn_connect(
                 match &msg {
                     ClientMessage::State(s) => {
                         shared2.lock().await.status = s.clone();
+                        if matches!(s, WireState::Established) {
+                            // Connected: notify the user + hide the window to the
+                            // tray (the app keeps running in the background).
+                            use tauri_plugin_notification::NotificationExt;
+                            let name = shared2
+                                .lock()
+                                .await
+                                .current_profile
+                                .clone()
+                                .unwrap_or_default();
+                            let _ = app2
+                                .notification()
+                                .builder()
+                                .title("Yellow VPN")
+                                .body(format!("Connected to {name}"))
+                                .show();
+                            if let Some(w) = app2.get_webview_window("main") {
+                                let _ = w.hide();
+                            }
+                        }
                     }
                     ClientMessage::Error { permanent: true, .. } => {
                         // The engine will not retry: the tunnel is down, so
@@ -179,8 +212,72 @@ async fn vpn_status(state: State<'_, Shared>) -> Result<WireState, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .manage::<Shared>(Arc::new(Mutex::new(VpnState::default())))
         .manage(Db::open(&db_path()).expect("failed to open profiles.db"))
+        .setup(|app| {
+            use tauri::menu::{Menu, MenuItem};
+            use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+            let show = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+            let disconnect = MenuItem::with_id(app, "disconnect", "Disconnect", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &disconnect, &quit])?;
+
+            let mut builder = TrayIconBuilder::new()
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "disconnect" => {
+                        let shared = app.state::<Shared>().inner().clone();
+                        tauri::async_runtime::spawn(async move {
+                            let mut st = shared.lock().await;
+                            if let Some(mut w) = st.writer.take() {
+                                let _ = pipe::send_command(&mut w, &ClientCommand::Disconnect).await;
+                                st.writer = Some(w);
+                            }
+                        });
+                    }
+                    "quit" => {
+                        let shared = app.state::<Shared>().inner().clone();
+                        let handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            {
+                                let mut st = shared.lock().await;
+                                if let Some(mut w) = st.writer.take() {
+                                    let _ = pipe::send_command(&mut w, &ClientCommand::Shutdown).await;
+                                }
+                            }
+                            handle.exit(0);
+                        });
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        if let Some(w) = tray.app_handle().get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                });
+            if let Some(icon) = app.default_window_icon() {
+                builder = builder.icon(icon.clone());
+            }
+            builder.build(app)?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             vpn_connect,
             vpn_disconnect,
@@ -191,27 +288,13 @@ pub fn run() {
             profile_delete
         ])
         .on_window_event(|window, event| {
-            // On close, tell the helper to shut down so no tunnel is orphaned.
-            // We use a best-effort fire-and-forget spawn rather than
-            // `tauri::async_runtime::block_on` here: blocking synchronously
-            // inside the window-event callback risks deadlocking against the
-            // async runtime that also drives this same Mutex (the reader task
-            // spawned in `vpn_connect` locks `shared2` from within the async
-            // executor), and there is no bound on how long a hung pipe write
-            // could stall window teardown. A spawned task sends the Shutdown
-            // command without blocking the event handler; if the process exits
-            // before it lands, the helper's own EOF-on-pipe-close handling
-            // (see vpn-helper's `serve()`) already guarantees the tunnel is
-            // torn down.
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                let state: State<'_, Shared> = window.state();
-                let shared = state.inner().clone();
-                tauri::async_runtime::spawn(async move {
-                    let mut st = shared.lock().await;
-                    if let Some(mut w) = st.writer.take() {
-                        let _ = pipe::send_command(&mut w, &ClientCommand::Shutdown).await;
-                    }
-                });
+            // Close = hide to tray (Discord-style): the app keeps running in the
+            // background and the tunnel + helper stay alive. Real teardown +
+            // exit happens only via the tray "Quit" item. This prevents the
+            // window's X from killing an active VPN connection.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
             }
         })
         .run(tauri::generate_context!())
