@@ -23,3 +23,13 @@ windows-sys = { workspace = true, features = [
     "Win32_Security_Authorization",
     "Win32_System_Threading",
 ] }
+
+[profile.dev.package.scrypt]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1 # Allows LLVM to perform better optimization.
+lto = true # Enables link-time-optimizations.
+opt-level = "z" # Prioritizes small binary size. Use `3` if you prefer speed.
+panic = "abort" # Higher performance by disabling panic handlers.
+strip = true # Ensures debug symbols are removed.

@@ -219,7 +219,6 @@ async fn vpn_status(state: State<'_, Shared>) -> Result<WireState, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .manage::<Shared>(Arc::new(Mutex::new(VpnState::default())))
         .manage(Db::open(&db_path()).expect("failed to open profiles.db"))

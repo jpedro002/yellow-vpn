@@ -17,11 +17,7 @@ webpki-roots = "0.26"
 bytes = "1"
 tun = { version = "0.7", features = ["async"] }
 net-route = "0.4"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 sha2 = "0.10"
-clap = { version = "4", features = ["derive"] }
-toml = "0.8"
-rpassword = "7"
 thiserror = "1"
 
 [target.'cfg(windows)'.dependencies]
