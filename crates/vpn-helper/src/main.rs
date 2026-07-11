@@ -195,6 +195,151 @@ mod windows_impl {
         }
     }
 
+    /// Failure modes for [`create_restricted_pipe`], kept distinct so `main` can
+    /// fall back to an unrestricted pipe only when the *descriptor* couldn't be
+    /// built — a genuine pipe-creation failure (e.g. another helper already owns
+    /// the name) should still be reported as a hard error, not silently retried
+    /// with a weaker ACL.
+    enum PipeCreateError {
+        SdBuild(std::io::Error),
+        Create(std::io::Error),
+    }
+
+    /// Look up the SID of the current process token, formatted as a string (e.g.
+    /// `S-1-5-21-...`), for use in the pipe's SDDL security descriptor.
+    ///
+    /// Safety/resource notes: the process token handle is opened with
+    /// `TOKEN_QUERY` and closed on every exit path. `GetTokenInformation` is
+    /// called twice (two-call pattern): first with a null/zero buffer purely to
+    /// learn the required size (its own failure there is expected and ignored;
+    /// only the returned size matters), then again into a heap buffer sized to
+    /// match. The `TOKEN_USER.User.Sid` pointer borrowed from that buffer is only
+    /// read while the buffer is alive. `ConvertSidToStringSidW` allocates its
+    /// output with `LocalAlloc` internally; we measure the NUL-terminated wide
+    /// string, copy it into an owned `String`, then free it with `LocalFree`
+    /// before returning.
+    fn current_user_sid_string() -> std::io::Result<String> {
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
+        use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+        use windows_sys::Win32::Security::{
+            GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        unsafe {
+            let mut token: HANDLE = std::ptr::null_mut();
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+
+            // First call: ask for the required buffer size. This is expected to
+            // report failure (ERROR_INSUFFICIENT_BUFFER) while still filling in
+            // `needed`; only `needed` is used below.
+            let mut needed: u32 = 0;
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed);
+            if needed == 0 {
+                let e = std::io::Error::last_os_error();
+                CloseHandle(token);
+                return Err(e);
+            }
+
+            let mut buf = vec![0u8; needed as usize];
+            let ok = GetTokenInformation(
+                token,
+                TokenUser,
+                buf.as_mut_ptr() as *mut core::ffi::c_void,
+                needed,
+                &mut needed,
+            );
+            if ok == 0 {
+                let e = std::io::Error::last_os_error();
+                CloseHandle(token);
+                return Err(e);
+            }
+
+            // Safety: `buf` was sized to `needed` and just filled by
+            // GetTokenInformation(TokenUser), so it holds a valid TOKEN_USER;
+            // `token_user.User.Sid` points inside `buf` and is valid as long as
+            // `buf` is alive (it is, for the rest of this block).
+            let token_user = &*(buf.as_ptr() as *const TOKEN_USER);
+            let sid = token_user.User.Sid;
+
+            let mut sid_str_ptr: *mut u16 = std::ptr::null_mut();
+            let ok = ConvertSidToStringSidW(sid, &mut sid_str_ptr);
+            CloseHandle(token);
+            if ok == 0 || sid_str_ptr.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+
+            let mut len = 0usize;
+            while *sid_str_ptr.add(len) != 0 {
+                len += 1;
+            }
+            let slice = std::slice::from_raw_parts(sid_str_ptr, len);
+            let sid_string = String::from_utf16_lossy(slice);
+            LocalFree(sid_str_ptr as HLOCAL);
+            Ok(sid_string)
+        }
+    }
+
+    /// Create the control pipe with a security descriptor that grants
+    /// `GENERIC_ALL` only to the current user, Built-in Administrators (`BA`),
+    /// and Local System (`SY`) — a protected DACL (`D:P`, no inherited or
+    /// default ACEs) so no other user on the machine can open the pipe. This is
+    /// what lets the unprivileged GUI (same interactive user, medium integrity)
+    /// talk to the elevated helper while keeping other users locked out.
+    fn create_restricted_pipe() -> Result<NamedPipeServer, PipeCreateError> {
+        use windows_sys::Win32::Foundation::{HLOCAL, LocalFree};
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        };
+        use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+
+        let sid_string = current_user_sid_string().map_err(PipeCreateError::SdBuild)?;
+        // D:P = protected DACL (ignore inherited/default ACEs). Three allow ACEs:
+        // SYSTEM, Administrators, and the current user, each GENERIC_ALL.
+        let sddl = format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;{sid_string})");
+        let sddl_wide: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
+
+        let mut psd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        // Safety: `sddl_wide` is a NUL-terminated wide string alive for this call;
+        // `psd` receives a self-relative security descriptor allocated by the OS
+        // (via LocalAlloc) that we own and must LocalFree once done with it.
+        let ok = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl_wide.as_ptr(),
+                SDDL_REVISION_1,
+                &mut psd,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 || psd.is_null() {
+            return Err(PipeCreateError::SdBuild(std::io::Error::last_os_error()));
+        }
+
+        let mut sa = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: psd,
+            bInheritHandle: 0,
+        };
+
+        // Safety: `sa` is a fully-initialized SECURITY_ATTRIBUTES pointing at the
+        // self-relative descriptor built above, and both stay alive across this
+        // call. CreateNamedPipeW (which this wraps) copies the descriptor into
+        // the kernel object rather than retaining our pointer, so it's safe to
+        // free `psd` immediately after this call returns, on either outcome.
+        let result = unsafe {
+            ServerOptions::new().first_pipe_instance(true).create_with_security_attributes_raw(
+                PIPE_NAME,
+                &mut sa as *mut _ as *mut core::ffi::c_void,
+            )
+        };
+
+        unsafe { LocalFree(psd as HLOCAL) };
+
+        result.map_err(PipeCreateError::Create)
+    }
+
     fn init_log() {
         let dir = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into());
         let path = std::path::Path::new(&dir).join("yellow-vpn");
@@ -209,9 +354,29 @@ mod windows_impl {
         init_log();
         tracing::info!("helper starting; creating pipe {PIPE_NAME}");
         // First instance owns the pipe; create then wait for the GUI to connect.
-        let server = match ServerOptions::new().first_pipe_instance(true).create(PIPE_NAME) {
+        // The happy path restricts the pipe's DACL to the current user + Admins +
+        // SYSTEM (see `create_restricted_pipe`). If building that descriptor fails
+        // (SD-construction FFI step), fall back to a plain pipe so the app still
+        // functions rather than refusing to start; an actual pipe-creation
+        // failure (e.g. another helper instance already owns the name) is still
+        // a hard error either way.
+        let server = match create_restricted_pipe() {
             Ok(s) => s,
-            Err(e) => {
+            Err(PipeCreateError::SdBuild(e)) => {
+                tracing::warn!(
+                    error = %e,
+                    "could not build restrictive pipe security descriptor — \
+                     falling back to default pipe ACL"
+                );
+                match ServerOptions::new().first_pipe_instance(true).create(PIPE_NAME) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to create pipe — another helper running?");
+                        return;
+                    }
+                }
+            }
+            Err(PipeCreateError::Create(e)) => {
                 tracing::error!(error = %e, "failed to create pipe — another helper running?");
                 return;
             }

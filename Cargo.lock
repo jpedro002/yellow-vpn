@@ -4652,6 +4652,7 @@ dependencies = [
  "tracing-subscriber",
  "vpn-engine",
  "vpn-ipc",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
