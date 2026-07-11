@@ -75,8 +75,18 @@ export function StatusHero({
             {headline}
           </motion.p>
         </AnimatePresence>
-        <p className="mt-1 font-mono text-xs text-muted-foreground">
-          {active ? `${active.host}:${active.port}` : "select a profile"}
+        <p
+          className={`mt-1 font-mono text-xs ${
+            connected ? "text-ok" : linking ? "text-brand" : "text-muted-foreground"
+          }`}
+        >
+          {connected
+            ? `secure tunnel · ${active?.protocol ?? ""}`
+            : linking
+              ? "negotiating tunnel…"
+              : active
+                ? `${active.host}:${active.port}`
+                : "select a profile"}
         </p>
       </div>
 
