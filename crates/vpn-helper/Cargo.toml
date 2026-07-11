@@ -1,0 +1,17 @@
+[package]
+name = "vpn-helper"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "yellow-vpn-helper"
+path = "src/main.rs"
+
+[dependencies]
+vpn-engine = { path = "../vpn-engine" }
+vpn-ipc = { path = "../vpn-ipc" }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["fmt"] }

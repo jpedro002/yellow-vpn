@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["src-tauri", "crates/vpn-engine", "crates/vpn-ipc"]
+members = ["src-tauri", "crates/vpn-engine", "crates/vpn-ipc", "crates/vpn-helper"]
 
 [workspace.package]
 edition = "2024"

@@ -4643,6 +4643,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "vpn-helper"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "vpn-engine",
+ "vpn-ipc",
+]
+
+[[package]]
 name = "vpn-ipc"
 version = "0.1.0"
 dependencies = [
