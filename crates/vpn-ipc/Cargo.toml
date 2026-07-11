@@ -1,0 +1,14 @@
+[package]
+name = "vpn-ipc"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lib]
+name = "vpn_ipc"
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
