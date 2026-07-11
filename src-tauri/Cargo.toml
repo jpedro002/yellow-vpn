@@ -25,6 +25,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 vpn-ipc = { path = "../crates/vpn-ipc" }
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [

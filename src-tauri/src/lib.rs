@@ -1,4 +1,5 @@
 mod pipe;
+mod profiles;
 
 use std::sync::Arc;
 
@@ -7,7 +8,36 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::net::windows::named_pipe::NamedPipeClient;
 use tokio::sync::Mutex;
 
+use profiles::{Db, NewProfile, Profile};
 use vpn_ipc::{ClientCommand, ClientMessage, WireConfig, WireState};
+
+/// Path to the profiles DB: `%APPDATA%\yellow-vpn\profiles.db` (dir created on demand).
+fn db_path() -> std::path::PathBuf {
+    let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
+    let dir = std::path::Path::new(&base).join("yellow-vpn");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("profiles.db")
+}
+
+#[tauri::command]
+async fn profiles_list(db: State<'_, Db>) -> Result<Vec<Profile>, String> {
+    db.list().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn profile_create(db: State<'_, Db>, profile: NewProfile) -> Result<Profile, String> {
+    db.create(&profile).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn profile_update(db: State<'_, Db>, id: i64, profile: NewProfile) -> Result<Profile, String> {
+    db.update(id, &profile).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn profile_delete(db: State<'_, Db>, id: i64) -> Result<(), String> {
+    db.delete(id).map_err(|e| e.to_string())
+}
 
 struct VpnState {
     writer: Option<tokio::io::WriteHalf<NamedPipeClient>>,
@@ -150,7 +180,16 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage::<Shared>(Arc::new(Mutex::new(VpnState::default())))
-        .invoke_handler(tauri::generate_handler![vpn_connect, vpn_disconnect, vpn_status])
+        .manage(Db::open(&db_path()).expect("failed to open profiles.db"))
+        .invoke_handler(tauri::generate_handler![
+            vpn_connect,
+            vpn_disconnect,
+            vpn_status,
+            profiles_list,
+            profile_create,
+            profile_update,
+            profile_delete
+        ])
         .on_window_event(|window, event| {
             // On close, tell the helper to shut down so no tunnel is orphaned.
             // We use a best-effort fire-and-forget spawn rather than
