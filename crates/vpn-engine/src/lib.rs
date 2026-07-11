@@ -14,6 +14,6 @@ pub mod signal;
 pub mod tun_device;
 pub mod tunnel;
 
-pub use client::run_client;
+pub use client::{run_client, run_client_supervised, ClientEvent};
 pub use config::{Config, Protocol};
 pub use error::VpnError;

@@ -14,6 +14,16 @@ use crate::error::VpnError;
 use crate::framer::{CstpTunnelFramer, SlimTunnelFramer, TunnelFramer};
 use crate::{auth, forward, routing, signal, tun_device, tunnel};
 
+/// State transitions surfaced to an out-of-process supervisor (the GUI helper).
+#[derive(Debug, Clone)]
+pub enum ClientEvent {
+    Connecting,
+    Established,
+    Reconnecting { delay_secs: f64 },
+    Disconnected,
+    PermanentError(String),
+}
+
 const BASE_DELAY_MS: u64 = 1_000; // base 1s (D-04)
 const MAX_DELAY_MS: u64 = 60_000; // cap 60s (D-04)
 
@@ -67,10 +77,15 @@ async fn connect(
     password: &str,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     established: &mut bool,
+    events: &tokio::sync::mpsc::Sender<ClientEvent>,
 ) -> Result<(), VpnError> {
     match config.protocol {
-        Protocol::AnyConnect => connect_anyconnect(config, password, shutdown_rx, established).await,
-        Protocol::Checkpoint => connect_checkpoint(config, password, shutdown_rx, established).await,
+        Protocol::AnyConnect => {
+            connect_anyconnect(config, password, shutdown_rx, established, events).await
+        }
+        Protocol::Checkpoint => {
+            connect_checkpoint(config, password, shutdown_rx, established, events).await
+        }
     }
 }
 
@@ -84,6 +99,7 @@ async fn run_pipeline(
     framer: Box<dyn TunnelFramer>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     established: &mut bool,
+    events: &tokio::sync::mpsc::Sender<ClientEvent>,
 ) -> Result<(), VpnError> {
     let tun = tun_device::open_tun(params).await?;
     tracing::info!(interface = %tun.name(), "TUN interface ready");
@@ -103,6 +119,7 @@ async fn run_pipeline(
     // We reached forwarding: a live tunnel exists. If it drops after this point, run_client
     // treats it as a sustained connection and resets the backoff schedule (D-04).
     *established = true;
+    let _ = events.send(ClientEvent::Established).await;
 
     // run_forwarding OWNS stream+tun+routing and runs the LOCKED routes-before-TUN teardown on
     // EVERY exit (D-07). The injected shutdown_rx is MOVED in; its shutdown arm returns Ok(()).
@@ -116,6 +133,7 @@ async fn connect_anyconnect(
     password: &str,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     established: &mut bool,
+    events: &tokio::sync::mpsc::Sender<ClientEvent>,
 ) -> Result<(), VpnError> {
     tracing::info!(host = %config.host, port = config.port, "connecting (AnyConnect)");
     let trust = cert_trust(config);
@@ -129,6 +147,7 @@ async fn connect_anyconnect(
         Box::new(CstpTunnelFramer),
         shutdown_rx,
         established,
+        events,
     )
     .await
 }
@@ -141,6 +160,7 @@ async fn connect_checkpoint(
     password: &str,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     established: &mut bool,
+    events: &tokio::sync::mpsc::Sender<ClientEvent>,
 ) -> Result<(), VpnError> {
     tracing::info!(host = %config.host, port = config.port, "connecting (Check Point SNX)");
     let trust = cert_trust(config);
@@ -186,6 +206,7 @@ async fn connect_checkpoint(
         Box::new(SlimTunnelFramer),
         shutdown_rx,
         established,
+        events,
     )
     .await
 }
@@ -203,17 +224,41 @@ pub async fn run_client(config: &Config, password: &str) -> Result<(), VpnError>
         let _ = shutdown_tx.send(true); // receivers may be gone — ignore send error
     });
 
+    // CLI path discards events.
+    let (etx, mut erx) = tokio::sync::mpsc::channel::<ClientEvent>(16);
+    tokio::spawn(async move { while erx.recv().await.is_some() {} });
+    run_client_supervised(config, password, shutdown_rx, etx).await
+}
+
+/// Reconnect loop driven by an EXTERNAL shutdown channel, emitting state events.
+/// Same control flow as the old run_client body minus the internal signal task.
+pub async fn run_client_supervised(
+    config: &Config,
+    password: &str,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    events: tokio::sync::mpsc::Sender<ClientEvent>,
+) -> Result<(), VpnError> {
     let mut attempt: u32 = 0;
     loop {
+        // Honor an already-set shutdown before doing any network work.
+        if *shutdown_rx.borrow() {
+            let _ = events.send(ClientEvent::Disconnected).await;
+            return Ok(());
+        }
         let mut established = false;
-        match connect(config, password, shutdown_rx.clone(), &mut established).await {
+        let _ = events.send(ClientEvent::Connecting).await;
+        match connect(config, password, shutdown_rx.clone(), &mut established, &events).await {
             // Clean user shutdown -> terminal, do NOT reconnect (Phase 7 contract, criterion 1).
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                let _ = events.send(ClientEvent::Disconnected).await;
+                return Ok(());
+            }
 
             // Permanent error (auth/config/privilege/tun-unavailable) -> terminal, exit non-zero
             // (criterion 3). No backoff, no retry.
             Err(e) if e.is_permanent() => {
                 tracing::error!(error = %e, "permanent error — not reconnecting");
+                let _ = events.send(ClientEvent::PermanentError(e.to_string())).await;
                 return Err(e);
             }
 
@@ -229,6 +274,7 @@ pub async fn run_client(config: &Config, password: &str) -> Result<(), VpnError>
 
                 // If shutdown already fired (e.g. concurrently with the drop), exit now (D-06).
                 if *shutdown_rx.borrow() {
+                    let _ = events.send(ClientEvent::Disconnected).await;
                     return Ok(());
                 }
 
@@ -238,6 +284,9 @@ pub async fn run_client(config: &Config, password: &str) -> Result<(), VpnError>
                     delay_secs = delay.as_secs_f64(),
                     "reconnecting after backoff"
                 );
+                let _ = events
+                    .send(ClientEvent::Reconnecting { delay_secs: delay.as_secs_f64() })
+                    .await;
 
                 // Shutdown-interruptible backoff (D-06): sleep OR shutdown, whichever first.
                 // Shadow with a scoped clone so the literal `shutdown_rx.changed()` drives the arm.
@@ -246,6 +295,7 @@ pub async fn run_client(config: &Config, password: &str) -> Result<(), VpnError>
                     _ = tokio::time::sleep(delay) => {}
                     _ = shutdown_rx.changed() => {
                         tracing::info!("shutdown during backoff — aborting reconnect");
+                        let _ = events.send(ClientEvent::Disconnected).await;
                         return Ok(());
                     }
                 }
@@ -295,5 +345,31 @@ mod tests {
                 "capped delay {d}ms out of [45000,75000]"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn supervised_honors_preset_shutdown() {
+        use crate::config::{Config, Protocol};
+        let cfg = Config {
+            host: "127.0.0.1".into(),
+            port: 1, // nothing listening
+            username: "u".into(),
+            password: Some("p".into()),
+            verbose: false,
+            cert_sha256: None,
+            insecure: true,
+            protocol: Protocol::AnyConnect,
+        };
+        let (tx, rx) = tokio::sync::watch::channel(true); // already shutting down
+        let _ = tx;
+        let (etx, mut erx) = tokio::sync::mpsc::channel(8);
+        let res = run_client_supervised(&cfg, "p", rx, etx).await;
+        assert!(res.is_ok(), "preset shutdown must return Ok, got {res:?}");
+        // Drain events: last must be Disconnected.
+        let mut last = None;
+        while let Ok(ev) = erx.try_recv() {
+            last = Some(ev);
+        }
+        assert!(matches!(last, Some(ClientEvent::Disconnected)));
     }
 }
