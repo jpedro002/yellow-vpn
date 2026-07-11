@@ -1,0 +1,49 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg" cx="35%" cy="28%" r="85%">
+      <stop offset="0%" stop-color="#FFDD57"/>
+      <stop offset="55%" stop-color="#FFC629"/>
+      <stop offset="100%" stop-color="#F0A400"/>
+    </radialGradient>
+    <linearGradient id="mark" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#232326"/>
+      <stop offset="100%" stop-color="#151517"/>
+    </linearGradient>
+    <linearGradient id="tunnel" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFE79A"/>
+      <stop offset="100%" stop-color="#FFC629"/>
+    </linearGradient>
+  </defs>
+
+  <!-- background squircle -->
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="url(#bg)"/>
+
+  <!-- soft inner shadow ring for depth -->
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="none" stroke="#B8790A" stroke-opacity="0.18" stroke-width="6"/>
+
+  <!-- Shield / Y monogram mark -->
+  <path d="
+    M 512 336
+    C 512 336 486 300 448 268
+    C 402 230 340 222 300 240
+    C 300 240 292 290 312 348
+    C 330 400 366 438 400 460
+    C 430 480 465 494 486 526
+    C 486 526 452 566 434 630
+    C 418 688 418 748 434 800
+    C 448 846 478 878 512 894
+    C 546 878 576 846 590 800
+    C 606 748 606 688 590 630
+    C 572 566 538 526 538 526
+    C 559 494 594 480 624 460
+    C 658 438 694 400 712 348
+    C 732 290 724 240 724 240
+    C 684 222 622 230 576 268
+    C 538 300 512 336 512 336
+    Z
+  " fill="url(#mark)"/>
+
+  <!-- lightning notch cut through the center: speed + secure tunnel -->
+  <path d="M 546 452 L 486 452 L 512 548 L 468 548 L 556 700 L 528 572 L 574 572 Z" fill="url(#tunnel)"/>
+
+</svg>
