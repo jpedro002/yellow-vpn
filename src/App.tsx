@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { motion, useReducedMotion, type Variants } from "framer-motion";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Minus, X } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { useVpnState } from "@/hooks/useVpnState";
 import { StatusHero } from "@/components/StatusHero";
@@ -48,8 +50,10 @@ export default function App() {
     show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] } },
   };
 
+  const win = getCurrentWindow();
+
   return (
-    <div className="relative min-h-screen overflow-hidden bg-background text-foreground">
+    <div className="relative flex h-full flex-col overflow-hidden rounded-xl border border-line bg-background text-foreground">
       <Toaster theme="dark" richColors position="top-right" />
 
       {/* Ambient atmosphere */}
@@ -66,17 +70,18 @@ export default function App() {
       </div>
 
       <motion.div
-        className="relative flex min-h-screen flex-col"
+        className="relative flex flex-1 flex-col"
         variants={container}
         initial="hidden"
         animate="show"
       >
-        {/* Top bar */}
+        {/* Custom title bar (OS decoration is off) — drag region + window controls */}
         <motion.header
           variants={item}
-          className="flex items-center justify-between border-b border-line px-6 py-4"
+          data-tauri-drag-region
+          className="flex select-none items-center justify-between border-b border-line py-3 pl-6 pr-2"
         >
-          <div className="flex items-center gap-2.5">
+          <div className="pointer-events-none flex items-center gap-2.5">
             <img
               src="/yellow_vpn_icon.svg"
               alt="Yellow VPN"
@@ -89,14 +94,32 @@ export default function App() {
               </span>
             </div>
           </div>
-          <div className="flex items-center gap-2 font-mono text-[11px]">
-            <span className="relative flex h-2 w-2">
-              {t.live && !reduce && (
-                <span className={`absolute inline-flex h-full w-full animate-ping rounded-full ${t.dot} opacity-75`} />
-              )}
-              <span className={`relative inline-flex h-2 w-2 rounded-full ${t.dot}`} />
-            </span>
-            <span className={`uppercase tracking-widest ${t.text}`}>{t.label}</span>
+          <div className="flex items-center gap-3">
+            <div className="pointer-events-none flex items-center gap-2 font-mono text-[11px]">
+              <span className="relative flex h-2 w-2">
+                {t.live && !reduce && (
+                  <span className={`absolute inline-flex h-full w-full animate-ping rounded-full ${t.dot} opacity-75`} />
+                )}
+                <span className={`relative inline-flex h-2 w-2 rounded-full ${t.dot}`} />
+              </span>
+              <span className={`uppercase tracking-widest ${t.text}`}>{t.label}</span>
+            </div>
+            <div className="flex items-center">
+              <button
+                aria-label="Minimize"
+                onClick={() => win.minimize()}
+                className="flex h-8 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+              >
+                <Minus className="h-4 w-4" />
+              </button>
+              <button
+                aria-label="Close to tray"
+                onClick={() => win.close()}
+                className="flex h-8 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </motion.header>
 

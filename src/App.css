@@ -137,12 +137,20 @@
   * {
     @apply border-border outline-ring/50;
     }
+  html, body, #root {
+    height: 100%;
+    }
+  /* Window is borderless + transparent (custom decoration); the app surface
+     draws its own rounded background, so the page itself stays transparent
+     to let the rounded corners cut through. */
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground;
+    background: transparent;
     -webkit-font-smoothing: antialiased;
     }
   html {
     @apply font-sans;
+    background: transparent;
     }
 }
 
