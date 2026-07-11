@@ -4,8 +4,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Minus, X } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { useVpnState } from "@/hooks/useVpnState";
+import { useWintun } from "@/hooks/useWintun";
 import { StatusHero } from "@/components/StatusHero";
 import { ProfileList } from "@/components/ProfileList";
+import { SetupGate } from "@/components/SetupGate";
 import {
   Profile,
   listProfiles,
@@ -26,6 +28,7 @@ function tone(raw: ReturnType<typeof useVpnState>["raw"]) {
 
 export default function App() {
   const { raw } = useVpnState();
+  const setup = useWintun();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [selected, setSelected] = useState<Profile | null>(null);
   const reduce = useReducedMotion();
@@ -123,37 +126,43 @@ export default function App() {
           </div>
         </motion.header>
 
-        {/* Control panel */}
-        <main className="mx-auto grid w-full max-w-5xl flex-1 content-start gap-5 p-6 md:grid-cols-[1.05fr_1fr]">
-          <motion.div variants={item}>
-            <StatusHero
-              raw={raw}
-              active={selected}
-              canConnect={!!selected}
-              onConnect={() => selected && connectProfile(selected)}
-              onDisconnect={() => disconnect()}
-            />
-          </motion.div>
-          <motion.div variants={item}>
-            <ProfileList
-              profiles={profiles}
-              selectedId={selected?.id ?? null}
-              onSelect={setSelected}
-              onCreate={async (p) => {
-                await createProfile(p);
-                await refresh();
-              }}
-              onEdit={async (id, p) => {
-                await updateProfile(id, p);
-                await refresh();
-              }}
-              onDelete={async (id) => {
-                await deleteProfile(id);
-                await refresh();
-              }}
-            />
-          </motion.div>
-        </main>
+        {/* First-run driver setup gate, then the control panel */}
+        {setup.stage !== "ready" ? (
+          <main className="flex flex-1 items-center justify-center p-6">
+            <SetupGate {...setup} />
+          </main>
+        ) : (
+          <main className="mx-auto grid w-full max-w-5xl flex-1 content-start gap-5 p-6 md:grid-cols-[1.05fr_1fr]">
+            <motion.div variants={item}>
+              <StatusHero
+                raw={raw}
+                active={selected}
+                canConnect={!!selected}
+                onConnect={() => selected && connectProfile(selected)}
+                onDisconnect={() => disconnect()}
+              />
+            </motion.div>
+            <motion.div variants={item}>
+              <ProfileList
+                profiles={profiles}
+                selectedId={selected?.id ?? null}
+                onSelect={setSelected}
+                onCreate={async (p) => {
+                  await createProfile(p);
+                  await refresh();
+                }}
+                onEdit={async (id, p) => {
+                  await updateProfile(id, p);
+                  await refresh();
+                }}
+                onDelete={async (id) => {
+                  await deleteProfile(id);
+                  await refresh();
+                }}
+              />
+            </motion.div>
+          </main>
+        )}
 
         {/* Status bar */}
         <motion.footer

@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "predev:helper": "cargo build -p vpn-helper && node -e \"const fs=require('fs');const src='src-tauri/resources/wintun.dll';const dst='target/debug/wintun.dll';if(fs.existsSync(src)){fs.copyFileSync(src,dst);}else{console.warn('WARNING: '+src+' not found; skipping copy. See src-tauri/resources/README.txt');}\"",
+    "predev:helper": "cargo build -p vpn-helper",
     "prebuild:helper": "cargo build -p vpn-helper --release && node -e \"require('fs').copyFileSync('target/release/yellow-vpn-helper.exe','src-tauri/resources/yellow-vpn-helper.exe')\"",
     "tauri:build": "npm run prebuild:helper && tauri build"
   },

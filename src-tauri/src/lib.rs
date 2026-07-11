@@ -1,5 +1,6 @@
 mod pipe;
 mod profiles;
+mod wintun;
 
 use std::sync::Arc;
 
@@ -17,6 +18,13 @@ fn db_path() -> std::path::PathBuf {
     let dir = std::path::Path::new(&base).join("yellow-vpn");
     let _ = std::fs::create_dir_all(&dir);
     dir.join("profiles.db")
+}
+
+/// First-run: make sure wintun.dll is present next to the exe (downloads it on
+/// Windows if missing). Returns true if already present, false if downloaded.
+#[tauri::command]
+async fn ensure_wintun(app: AppHandle) -> Result<bool, String> {
+    wintun::ensure(&app).await
 }
 
 #[tauri::command]
@@ -282,6 +290,7 @@ pub fn run() {
             vpn_connect,
             vpn_disconnect,
             vpn_status,
+            ensure_wintun,
             profiles_list,
             profile_create,
             profile_update,
