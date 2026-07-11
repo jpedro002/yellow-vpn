@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { motion, useReducedMotion, type Variants } from "framer-motion";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Minus, X } from "lucide-react";
+import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { useVpnState } from "@/hooks/useVpnState";
 import { useWintun } from "@/hooks/useWintun";
@@ -41,6 +42,20 @@ export default function App() {
   useEffect(() => {
     refresh();
   }, []);
+
+  async function handleConnect() {
+    if (!selected) return;
+    try {
+      await connectProfile(selected);
+    } catch (e) {
+      const msg = String(e);
+      toast.error(
+        msg.includes("UAC") || msg.includes("elevation")
+          ? "Connection needs administrator access — approve the prompt to continue."
+          : `Couldn't start the connection: ${msg}`,
+      );
+    }
+  }
 
   const t = tone(raw);
 
@@ -138,7 +153,7 @@ export default function App() {
                 raw={raw}
                 active={selected}
                 canConnect={!!selected}
-                onConnect={() => selected && connectProfile(selected)}
+                onConnect={handleConnect}
                 onDisconnect={() => disconnect()}
               />
             </motion.div>
