@@ -124,12 +124,49 @@ pub fn spawn_helper_elevated() -> io::Result<()> {
     Ok(())
 }
 
+/// Launch the helper as root via `pkexec` (polkit), which shows the desktop's
+/// native authentication dialog — the Linux equivalent of UAC / the macOS
+/// authorization prompt. `pkexec` execs the target directly (no shell), so the
+/// helper path needs no shell-escaping; we still reject anything but a plain
+/// absolute path as defense in depth for a privileged spawn.
+///
+/// Unlike macOS (where the helper is backgrounded inside the elevated shell and
+/// `osascript` returns immediately), `pkexec` stays as the helper's parent for
+/// the helper's whole lifetime, so this must NOT block: we spawn detached and
+/// let the shared `connect_with_spawn` poll loop wait for the socket. If the
+/// user dismisses the polkit dialog, `pkexec` exits and the socket never
+/// appears, so the poll loop reports the timeout.
 #[cfg(all(unix, not(target_os = "macos")))]
 pub fn spawn_helper_elevated() -> io::Result<()> {
-    // Linux GUI elevation (pkexec/sudo) is not wired up yet.
-    Err(io::Error::other(
-        "run the helper manually as root: sudo yellow-vpn-helper",
-    ))
+    let path = helper_path()?;
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| io::Error::other("helper path is not valid UTF-8"))?;
+    if !path.is_absolute() || path_str.chars().any(|c| c.is_control()) {
+        return Err(io::Error::other(
+            "helper path is not a plain absolute path — refusing privileged spawn",
+        ));
+    }
+
+    // Pass our (unprivileged) uid so the root helper can lock the control socket
+    // to exactly this user (chown + mode 0600), matching the macOS/Windows path.
+    let uid = unsafe { libc::getuid() };
+
+    // Spawn detached: the helper is long-lived, so waiting here would block the
+    // GUI. pkexec inherits our environment (incl. DISPLAY/WAYLAND_DISPLAY) so the
+    // polkit agent can render its prompt in the user's session.
+    match std::process::Command::new("pkexec")
+        .arg(path_str)
+        .arg(uid.to_string())
+        .spawn()
+    {
+        Ok(_child) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Err(io::Error::other(format!(
+            "pkexec not found — install polkit, or run the helper manually as root: \
+             sudo {path_str} {uid}"
+        ))),
+        Err(e) => Err(e),
+    }
 }
 
 /// Connect to the helper socket, spawning the elevated helper first if it is
