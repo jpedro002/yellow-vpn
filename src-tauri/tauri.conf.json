@@ -21,6 +21,7 @@
         "shadow": true
       }
     ],
+    "macOSPrivateApi": true,
     "security": {
       "csp": null
     }
@@ -35,8 +36,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [
-      "resources/yellow-vpn-helper.exe"
-    ]
+    "externalBin": [
+      "binaries/yellow-vpn-helper"
+    ],
+    "macOS": {
+      "entitlements": "entitlements.plist",
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": "-"
+    }
   }
 }

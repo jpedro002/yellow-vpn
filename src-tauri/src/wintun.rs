@@ -4,12 +4,14 @@
 //! and the elevated helper look for it). Progress is streamed to the frontend
 //! via `wintun://progress` events so the setup screen can show a bar.
 
+#[cfg(windows)]
 use serde::Serialize;
 
 /// Official Wintun release archive (a ZIP containing `wintun/bin/<arch>/wintun.dll`).
 #[cfg(windows)]
 const WINTUN_URL: &str = "https://www.wintun.net/builds/wintun-0.14.1.zip";
 
+#[cfg(windows)]
 #[derive(Clone, Serialize)]
 pub struct Progress {
     /// One of: "download", "extract".

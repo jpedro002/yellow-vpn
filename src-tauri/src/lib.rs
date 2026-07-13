@@ -6,16 +6,43 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::net::windows::named_pipe::NamedPipeClient;
 use tokio::sync::Mutex;
 
 use profiles::{Db, NewProfile, Profile};
 use vpn_ipc::{ClientCommand, ClientMessage, WireConfig, WireState};
 
-/// Path to the profiles DB: `%APPDATA%\yellow-vpn\profiles.db` (dir created on demand).
+/// Path to the profiles DB, in the per-user app-data directory:
+///   * Windows — `%APPDATA%\yellow-vpn`
+///   * macOS   — `~/Library/Application Support/yellow-vpn`
+///   * Linux   — `$XDG_DATA_HOME/yellow-vpn` (or `~/.local/share/yellow-vpn`)
+/// The dir is created on demand. Getting this right matters because the app is
+/// launched from Finder with cwd `/`, so a relative fallback would panic.
 fn db_path() -> std::path::PathBuf {
-    let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
-    let dir = std::path::Path::new(&base).join("yellow-vpn");
+    let base: std::path::PathBuf = {
+        #[cfg(windows)]
+        {
+            std::env::var_os("APPDATA")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::env::var_os("HOME")
+                .map(|h| std::path::PathBuf::from(h).join("Library/Application Support"))
+                .unwrap_or_else(std::env::temp_dir)
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            std::env::var_os("XDG_DATA_HOME")
+                .map(std::path::PathBuf::from)
+                .or_else(|| {
+                    std::env::var_os("HOME")
+                        .map(|h| std::path::PathBuf::from(h).join(".local/share"))
+                })
+                .unwrap_or_else(std::env::temp_dir)
+        }
+    };
+    let dir = base.join("yellow-vpn");
     let _ = std::fs::create_dir_all(&dir);
     dir.join("profiles.db")
 }
@@ -48,7 +75,7 @@ async fn profile_delete(db: State<'_, Db>, id: i64) -> Result<(), String> {
 }
 
 struct VpnState {
-    writer: Option<tokio::io::WriteHalf<NamedPipeClient>>,
+    writer: Option<tokio::io::WriteHalf<pipe::Client>>,
     reader: Option<tokio::task::JoinHandle<()>>,
     status: WireState,
     /// Name of the profile the current/last connect used, for the notification.

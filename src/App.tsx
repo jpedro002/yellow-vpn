@@ -72,11 +72,11 @@ export default function App() {
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden rounded-xl border border-line bg-background text-foreground">
-      <Toaster theme="dark" richColors position="top-right" />
+      <Toaster theme="dark" richColors position="bottom-right" />
 
       {/* Ambient atmosphere */}
       <div className="pointer-events-none absolute inset-0">
-        <div className="absolute left-1/2 top-[-12%] h-[420px] w-[760px] -translate-x-1/2 rounded-full bg-brand/10 blur-[130px]" />
+        <div className="absolute left-1/2 top-[-12%] h-105 w-190 -translate-x-1/2 rounded-full bg-brand/10 blur-[130px]" />
         <div
           className="absolute inset-0 opacity-[0.035]"
           style={{

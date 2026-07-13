@@ -1,20 +1,24 @@
-//! Elevated helper: owns the VPN engine, serves the GUI over a named pipe.
+//! Elevated helper: owns the VPN engine, serves the GUI over a local transport.
 //!
-//! This binary is Windows-only (it talks to the GUI over a Windows named pipe
-//! and drives Windows-specific privilege/TUN checks). On other platforms it
-//! compiles to a no-op so `cargo build --workspace` stays green everywhere.
+//! Transport is per-OS but the serving logic is shared:
+//!   * Windows — a restricted named pipe (`\\.\pipe\yellow-vpn`).
+//!   * macOS/Linux — a Unix-domain socket (`/tmp/yellow-vpn.sock`).
+//!
+//! In both cases the helper runs elevated (Administrator / root), owns the VPN
+//! engine, and speaks newline-delimited JSON (`vpn-ipc`) to the GUI.
 
-#[cfg(windows)]
-mod windows_impl {
+/// Transport-agnostic protocol: everything that does not depend on how the
+/// GUI connection was established. Both the Windows and Unix backends set up
+/// their stream, split it, and hand the halves to [`proto::serve`].
+mod proto {
     use std::sync::Arc;
 
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
+    use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
     use tokio::sync::{mpsc, watch, Mutex};
 
     use vpn_engine::config::{parse_sha256_fingerprint, Config, Protocol};
     use vpn_engine::{platform, run_client_supervised, ClientEvent};
-    use vpn_ipc::{ClientCommand, ClientMessage, WireConfig, WireProtocol, WireState, PIPE_NAME};
+    use vpn_ipc::{ClientCommand, ClientMessage, WireConfig, WireProtocol, WireState};
 
     /// Build the engine Config from the wire form. Parses the cert fingerprint here
     /// so a bad value is reported before any network work.
@@ -38,28 +42,6 @@ mod windows_impl {
                 WireProtocol::Checkpoint => Protocol::Checkpoint,
             },
         })
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn wire_to_config_maps_fields_and_rejects_bad_cert() {
-            let w = WireConfig {
-                host: "h".into(), port: 443, username: "u".into(),
-                protocol: WireProtocol::Checkpoint,
-                cert_sha256: None, insecure: true, verbose: false,
-            };
-            let c = config_from_wire(&w, "pw".into()).unwrap();
-            assert_eq!(c.host, "h");
-            assert_eq!(c.protocol, Protocol::Checkpoint);
-            assert!(c.insecure);
-
-            let mut bad = w.clone();
-            bad.cert_sha256 = Some("nothex".into());
-            assert!(config_from_wire(&bad, "pw".into()).is_err());
-        }
     }
 
     fn map_event(ev: ClientEvent) -> ClientMessage {
@@ -94,9 +76,10 @@ mod windows_impl {
         }
     }
 
-    type Writer = Arc<Mutex<tokio::io::WriteHalf<NamedPipeServer>>>;
+    /// Shared writer handle over any async write half.
+    type Writer<W> = Arc<Mutex<W>>;
 
-    async fn send(writer: &Writer, msg: &ClientMessage) {
+    async fn send<W: AsyncWrite + Unpin>(writer: &Writer<W>, msg: &ClientMessage) {
         if let Ok(mut line) = serde_json::to_string(msg) {
             line.push('\n');
             let mut w = writer.lock().await;
@@ -106,12 +89,11 @@ mod windows_impl {
     }
 
     /// Handle one Connect: pre-flight checks, then spawn the supervised engine and
-    /// a task that forwards its events to the pipe.
-    async fn handle_connect(
-        session: &Arc<Mutex<Session>>,
-        writer: &Writer,
-        config: Config,
-    ) {
+    /// a task that forwards its events to the transport.
+    async fn handle_connect<W>(session: &Arc<Mutex<Session>>, writer: &Writer<W>, config: Config)
+    where
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
         // Stop any prior tunnel first (and wait for its teardown to finish).
         session.lock().await.stop().await;
 
@@ -128,8 +110,8 @@ mod windows_impl {
         session.lock().await.shutdown = Some(shutdown_tx);
 
         // Larger buffer than the engine's own internal default so a momentary stall in the
-        // forwarding task (pipe write backpressure) doesn't block the engine's event.send()
-        // calls on its hot path (Task 3 review note).
+        // forwarding task (transport write backpressure) doesn't block the engine's
+        // event.send() calls on its hot path.
         let (etx, mut erx) = mpsc::channel::<ClientEvent>(128);
         let writer_evt = writer.clone();
         tokio::spawn(async move {
@@ -145,9 +127,13 @@ mod windows_impl {
         session.lock().await.engine = Some(engine_handle);
     }
 
-    async fn serve(server: NamedPipeServer) {
-        let (read_half, write_half) = tokio::io::split(server);
-        let writer: Writer = Arc::new(Mutex::new(write_half));
+    /// Serve one GUI connection until it closes or asks to shut down.
+    pub async fn serve<R, W>(read_half: R, write_half: W)
+    where
+        R: AsyncRead + Unpin,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        let writer: Writer<W> = Arc::new(Mutex::new(write_half));
         let session: Arc<Mutex<Session>> = Arc::new(Mutex::new(Session::default()));
         let mut lines = BufReader::new(read_half).lines();
 
@@ -180,20 +166,48 @@ mod windows_impl {
                         }
                     }
                 }
-                // EOF: the GUI closed the pipe. Never leave a tunnel up.
+                // EOF: the GUI closed the connection. Never leave a tunnel up.
                 Ok(None) => {
-                    tracing::info!("pipe closed by client — shutting down");
+                    tracing::info!("connection closed by client — shutting down");
                     session.lock().await.stop().await;
                     break;
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "pipe read error — shutting down");
+                    tracing::warn!(error = %e, "transport read error — shutting down");
                     session.lock().await.stop().await;
                     break;
                 }
             }
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn wire_to_config_maps_fields_and_rejects_bad_cert() {
+            let w = WireConfig {
+                host: "h".into(), port: 443, username: "u".into(),
+                protocol: WireProtocol::Checkpoint,
+                cert_sha256: None, insecure: true, verbose: false,
+            };
+            let c = config_from_wire(&w, "pw".into()).unwrap();
+            assert_eq!(c.host, "h");
+            assert_eq!(c.protocol, Protocol::Checkpoint);
+            assert!(c.insecure);
+
+            let mut bad = w.clone();
+            bad.cert_sha256 = Some("nothex".into());
+            assert!(config_from_wire(&bad, "pw".into()).is_err());
+        }
+    }
+}
+
+#[cfg(windows)]
+mod windows_impl {
+    use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
+    use vpn_ipc::PIPE_NAME;
 
     /// Failure modes for [`create_restricted_pipe`], kept distinct so `main` can
     /// fall back to an unrestricted pipe only when the *descriptor* couldn't be
@@ -389,7 +403,130 @@ mod windows_impl {
             return;
         }
         tracing::info!("GUI connected");
-        serve(server).await;
+        let (read_half, write_half) = tokio::io::split(server);
+        super::proto::serve(read_half, write_half).await;
+        tracing::info!("helper exiting");
+    }
+}
+
+#[cfg(unix)]
+mod unix_impl {
+    use std::io;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+    use std::path::Path;
+
+    use nix::unistd::{chown, Uid};
+    use tokio::net::UnixListener;
+    use vpn_ipc::{SOCKET_DIR, SOCKET_PATH};
+
+    /// Directory for helper logs. Created root-owned mode 0700 so no other user
+    /// can pre-plant a symlink at the log path (the /tmp symlink-attack class).
+    const LOG_DIR: &str = "/var/log/yellow-vpn";
+
+    /// Create `dir` (if absent) owned by root with `mode`, and verify the final
+    /// path is a real directory — NOT a symlink an attacker planted. Fails closed.
+    fn ensure_root_dir(dir: &str, mode: u32) -> io::Result<()> {
+        match std::fs::DirBuilder::new().mode(mode).create(dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+        // symlink_metadata does not follow: reject if the path is a symlink.
+        let md = std::fs::symlink_metadata(dir)?;
+        if !md.is_dir() {
+            return Err(io::Error::other(format!("{dir} is not a real directory")));
+        }
+        // Re-assert ownership+mode in case the dir pre-existed with weaker perms.
+        chown(dir, Some(Uid::from_raw(0)), None).map_err(io::Error::other)?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode))?;
+        Ok(())
+    }
+
+    fn init_log() {
+        if ensure_root_dir(LOG_DIR, 0o700).is_err() {
+            return; // No safe place to log; run without a log file.
+        }
+        let path = Path::new(LOG_DIR).join("helper.log");
+        // O_NOFOLLOW: refuse to open through a symlink. Combined with the
+        // root-only (0700) directory this closes the symlink-attack vector.
+        let opened = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .custom_flags(nix::libc::O_NOFOLLOW)
+            .open(&path);
+        if let Ok(file) = opened {
+            let _ = tracing_subscriber::fmt().with_writer(std::sync::Mutex::new(file)).try_init();
+        }
+    }
+
+    /// Parse the interactive user's uid from argv[1] (passed by the GUI when it
+    /// spawns the helper elevated). The socket is locked to this uid.
+    fn owner_uid() -> Option<Uid> {
+        std::env::args().nth(1)?.parse::<u32>().ok().map(Uid::from_raw)
+    }
+
+    #[tokio::main]
+    pub async fn main() {
+        init_log();
+
+        let Some(uid) = owner_uid() else {
+            tracing::error!("missing owner uid argument — refusing to start");
+            return;
+        };
+
+        // Socket lives in a root-owned, traverse-only (0711) directory so no
+        // other user can create files/symlinks beside it. Non-root users can
+        // traverse to reach the socket but cannot write into the directory.
+        if let Err(e) = ensure_root_dir(SOCKET_DIR, 0o711) {
+            tracing::error!(error = %e, "failed to prepare socket directory");
+            return;
+        }
+
+        tracing::info!("helper starting; binding socket {SOCKET_PATH}");
+        // Clear a stale socket from a prior crash. Safe: the parent dir is now
+        // root-owned 0711, so no other user could have substituted this path.
+        let _ = std::fs::remove_file(SOCKET_PATH);
+
+        let listener = match UnixListener::bind(SOCKET_PATH) {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to bind socket");
+                return;
+            }
+        };
+
+        // Lock the socket to the interactive user: chown to their uid + mode
+        // 0600 so ONLY that uid (and root) may connect(). This is the Unix
+        // equivalent of the Windows restricted-DACL pipe.
+        if let Err(e) = chown(SOCKET_PATH, Some(uid), None) {
+            tracing::error!(error = %e, "failed to chown socket — refusing to serve");
+            let _ = std::fs::remove_file(SOCKET_PATH);
+            return;
+        }
+        if let Err(e) =
+            std::fs::set_permissions(SOCKET_PATH, std::fs::Permissions::from_mode(0o600))
+        {
+            tracing::error!(error = %e, "failed to set socket mode — refusing to serve");
+            let _ = std::fs::remove_file(SOCKET_PATH);
+            return;
+        }
+
+        let (stream, _addr) = match listener.accept().await {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::error!(error = %e, "socket accept failed");
+                let _ = std::fs::remove_file(SOCKET_PATH);
+                return;
+            }
+        };
+        tracing::info!("GUI connected");
+
+        let (read_half, write_half) = tokio::io::split(stream);
+        super::proto::serve(read_half, write_half).await;
+
+        // Clean up so the next launch binds fresh.
+        let _ = std::fs::remove_file(SOCKET_PATH);
         tracing::info!("helper exiting");
     }
 }
@@ -399,8 +536,7 @@ fn main() {
     windows_impl::main()
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
 fn main() {
-    eprintln!("yellow-vpn-helper is Windows-only");
-    std::process::exit(1);
+    unix_impl::main()
 }

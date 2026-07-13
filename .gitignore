@@ -7,3 +7,9 @@ dist
 # Binary resources bundled into the app; must be provided/built locally
 src-tauri/resources/*.dll
 src-tauri/resources/yellow-vpn-helper.exe
+
+# Sidecar (externalBin) helper binaries staged by scripts/prepare-helper.mjs
+src-tauri/binaries/
+/yellow-vpn/
+# macOS
+.DS_Store

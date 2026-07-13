@@ -6,6 +6,18 @@ use serde::{Deserialize, Serialize};
 /// Fixed local named-pipe path (Windows).
 pub const PIPE_NAME: &str = r"\\.\pipe\yellow-vpn";
 
+/// Directory that holds the Unix-domain control socket (macOS/Linux). The
+/// elevated (root) helper creates it mode 0711 (traverse-only for non-root) so
+/// no other user can plant files/symlinks next to the socket — unlike `/tmp`.
+#[cfg(unix)]
+pub const SOCKET_DIR: &str = "/var/run/yellow-vpn";
+
+/// Fixed local Unix-domain-socket path (macOS/Linux). The root helper binds it,
+/// then chowns it to the interactive user with mode 0600 so ONLY that user (and
+/// root) can connect — the socket is not world-accessible.
+#[cfg(unix)]
+pub const SOCKET_PATH: &str = "/var/run/yellow-vpn/helper.sock";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WireProtocol {
     AnyConnect,

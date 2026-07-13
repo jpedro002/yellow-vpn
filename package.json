@@ -8,9 +8,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "predev:helper": "cargo build -p vpn-helper",
-    "prebuild:helper": "cargo build -p vpn-helper --release && node -e \"require('fs').copyFileSync('target/release/yellow-vpn-helper.exe','src-tauri/resources/yellow-vpn-helper.exe')\"",
-    "tauri:build": "npm run prebuild:helper && tauri build"
+    "predev:helper": "node scripts/prepare-helper.mjs",
+    "prebuild:helper": "node scripts/prepare-helper.mjs --release",
+    "tauri:build": "bun run prebuild:helper && tauri build"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.9",

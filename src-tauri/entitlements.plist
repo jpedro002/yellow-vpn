@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Hardened Runtime entitlements. The app is NOT App-Sandboxed (the helper
+         needs root + raw utun), so these only relax the hardened-runtime
+         restrictions the VPN engine and WebView require. -->
+
+    <!-- Outbound network (VPN engine + WebView). -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <!-- The elevated helper binds a local Unix-domain control socket. -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+</dict>
+</plist>

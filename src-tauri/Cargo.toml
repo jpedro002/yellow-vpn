@@ -19,7 +19,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 tauri-plugin-notification = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -35,6 +35,9 @@ windows-sys = { workspace = true, features = [
 ] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [profile.dev]
 incremental = true # Compile your binary in smaller steps.

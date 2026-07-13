@@ -4817,6 +4817,7 @@ dependencies = [
 name = "vpn-helper"
 version = "0.1.0"
 dependencies = [
+ "nix 0.29.0",
  "serde_json",
  "tokio",
  "tracing",
@@ -5575,6 +5576,7 @@ dependencies = [
 name = "yellow-vpn"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",

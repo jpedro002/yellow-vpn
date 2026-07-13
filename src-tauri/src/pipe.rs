@@ -1,17 +1,39 @@
-//! Named-pipe client to the elevated helper + UAC-elevated spawn of that helper.
+//! Client to the elevated helper + privileged spawn of that helper.
+//!
+//! Transport is per-OS: a Windows named pipe (UAC-elevated helper) or a Unix
+//! domain socket (root helper, elevated via `osascript` on macOS). The `Client`
+//! type and `connect_with_spawn` present the same surface to the GUI on both.
 use std::io;
 use std::path::PathBuf;
+#[cfg(any(windows, unix))]
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(windows)]
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
-use vpn_ipc::{ClientCommand, PIPE_NAME};
+#[cfg(unix)]
+use tokio::net::UnixStream;
+use vpn_ipc::ClientCommand;
+#[cfg(windows)]
+use vpn_ipc::PIPE_NAME;
+#[cfg(unix)]
+use vpn_ipc::SOCKET_PATH;
 
-/// Path to the bundled helper exe (next to the GUI exe).
+/// The connected transport to the helper.
+#[cfg(windows)]
+pub type Client = NamedPipeClient;
+#[cfg(unix)]
+pub type Client = UnixStream;
+
+/// Path to the bundled helper binary (next to the GUI executable).
 fn helper_path() -> io::Result<PathBuf> {
     let exe = std::env::current_exe()?;
     let dir = exe.parent().ok_or_else(|| io::Error::other("no exe dir"))?;
-    Ok(dir.join("yellow-vpn-helper.exe"))
+    #[cfg(windows)]
+    let name = "yellow-vpn-helper.exe";
+    #[cfg(unix)]
+    let name = "yellow-vpn-helper";
+    Ok(dir.join(name))
 }
 
 /// Launch the helper elevated (UAC). Returns once ShellExecute has been issued;
@@ -43,14 +65,10 @@ pub fn spawn_helper_elevated() -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
-pub fn spawn_helper_elevated() -> io::Result<()> {
-    Err(io::Error::other("helper spawn is Windows-only"))
-}
-
 /// Connect to the helper pipe, spawning the elevated helper first if it is absent.
 /// Retries the pipe connection for a few seconds to cover UAC + helper startup.
-pub async fn connect_with_spawn() -> io::Result<NamedPipeClient> {
+#[cfg(windows)]
+pub async fn connect_with_spawn() -> io::Result<Client> {
     // Try an existing helper first.
     if let Ok(c) = ClientOptions::new().open(PIPE_NAME) {
         return Ok(c);
@@ -66,9 +84,63 @@ pub async fn connect_with_spawn() -> io::Result<NamedPipeClient> {
     Err(io::Error::other("helper did not come up (pipe never appeared)"))
 }
 
+/// Launch the helper as root via the native macOS authorization dialog
+/// (`osascript ... with administrator privileges`, the mac equivalent of UAC).
+/// The helper is backgrounded inside the elevated shell so this returns as soon
+/// as the user completes the prompt; the caller then polls the socket.
+#[cfg(target_os = "macos")]
+pub fn spawn_helper_elevated() -> io::Result<()> {
+    let path = helper_path()?;
+    // Pass our (unprivileged) uid so the root helper can lock the control socket
+    // to exactly this user (chown + mode 0600), the mac equivalent of the
+    // restricted-DACL pipe on Windows.
+    let uid = unsafe { libc::getuid() };
+    // Single-quote the path for the shell (handles spaces); AppleScript's own
+    // string uses double quotes, so single quotes nest cleanly.
+    let shell_cmd = format!("'{}' {uid} >/dev/null 2>&1 &", path.to_string_lossy());
+    let script =
+        format!("do shell script \"{shell_cmd}\" with administrator privileges");
+
+    let status = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .status()?;
+    if !status.success() {
+        return Err(io::Error::other("elevation cancelled or failed"));
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn spawn_helper_elevated() -> io::Result<()> {
+    // Linux GUI elevation (pkexec/sudo) is not wired up yet.
+    Err(io::Error::other(
+        "run the helper manually as root: sudo yellow-vpn-helper",
+    ))
+}
+
+/// Connect to the helper socket, spawning the elevated helper first if it is
+/// absent. Retries for a few seconds to cover the auth prompt + helper startup.
+#[cfg(unix)]
+pub async fn connect_with_spawn() -> io::Result<Client> {
+    // Try an existing helper first.
+    if let Ok(c) = UnixStream::connect(SOCKET_PATH).await {
+        return Ok(c);
+    }
+    spawn_helper_elevated()?;
+    // Poll for up to ~15s while the user completes the auth prompt.
+    for _ in 0..150 {
+        match UnixStream::connect(SOCKET_PATH).await {
+            Ok(c) => return Ok(c),
+            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+    Err(io::Error::other("helper did not come up (socket never appeared)"))
+}
+
 /// Send one command as a JSON line.
 pub async fn send_command(
-    writer: &mut tokio::io::WriteHalf<NamedPipeClient>,
+    writer: &mut tokio::io::WriteHalf<Client>,
     cmd: &ClientCommand,
 ) -> io::Result<()> {
     let mut line = serde_json::to_string(cmd).map_err(io::Error::other)?;
@@ -79,10 +151,10 @@ pub async fn send_command(
 
 /// Split a connected pipe into a writer and a line-reader.
 pub fn split(
-    client: NamedPipeClient,
+    client: Client,
 ) -> (
-    tokio::io::WriteHalf<NamedPipeClient>,
-    tokio::io::Lines<BufReader<tokio::io::ReadHalf<NamedPipeClient>>>,
+    tokio::io::WriteHalf<Client>,
+    tokio::io::Lines<BufReader<tokio::io::ReadHalf<Client>>>,
 ) {
     let (r, w) = tokio::io::split(client);
     (w, BufReader::new(r).lines())
