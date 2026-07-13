@@ -124,6 +124,17 @@ EOF
 polkit hot-reloads `rules.d`, so no restart is needed. **Dev only** — remove
 before shipping: `sudo rm /etc/polkit-1/rules.d/49-yellowvpn-dev.rules`.
 
+The `program` path must match whatever `pkexec` actually launches, which depends
+on how you started the app. An **installed** build uses the install path
+(e.g. `/usr/bin/yellow-vpn-helper`); a `cargo`/dev run uses
+`target/debug/yellow-vpn-helper`. If you use both, match both:
+
+```js
+        (action.lookup("program") == "/usr/bin/yellow-vpn-helper" ||
+         action.lookup("program") ==
+            "/absolute/path/to/YellowVPN/target/debug/yellow-vpn-helper")
+```
+
 **B. Start the helper manually.** The GUI connects to an existing helper socket
 before spawning one, so you can pre-start it (pass your uid, which locks the
 socket to you):
@@ -137,6 +148,19 @@ for each connect.
 
 Full VPN testing under WSL2 is unreliable anyway (no TUN device by default, no
 real desktop) — a real Linux desktop is the intended target.
+
+#### WSL2 rendering warnings
+
+WSL2 has no real GPU, so WebKitGTK spams `libEGL` / `MESA` / `ZINK` warnings and
+may fail to render the window (`Gtk-CRITICAL ... GTK_IS_WIDGET`). Force software
+rendering:
+
+```bash
+WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1 yellow-vpn
+```
+
+If the window still doesn't appear, also set `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+These are WSL-only quirks; they don't occur on a real desktop.
 
 ---
 
