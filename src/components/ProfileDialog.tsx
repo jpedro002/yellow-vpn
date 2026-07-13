@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { motion, useReducedMotion, type Variants } from "framer-motion";
+import { m, useReducedMotion, type Variants } from "framer-motion";
 import {
   Dialog,
   DialogContent,
@@ -101,13 +101,13 @@ export function ProfileDialog({
       <DialogTrigger asChild>{trigger}</DialogTrigger>
       <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-2xl">
         <div className="h-1 w-full bg-brand" />
-        <motion.div
+        <m.div
           className="p-6"
           variants={container}
           initial="hidden"
           animate="show"
         >
-          <motion.div variants={item}>
+          <m.div variants={item}>
             <DialogHeader className="mb-5">
               <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-brand">
                 {initial ? "Edit connection" : "New connection"}
@@ -116,11 +116,11 @@ export function ProfileDialog({
                 {initial ? initial.name || "Profile" : "Configure profile"}
               </DialogTitle>
             </DialogHeader>
-          </motion.div>
+          </m.div>
 
           <div className="grid grid-cols-2 gap-x-6 gap-y-5">
             {/* Left column — gateway */}
-            <motion.div variants={item} className="grid content-start gap-4">
+            <m.div variants={item} className="grid content-start gap-4">
               <ColumnHeader>Gateway</ColumnHeader>
               <Field label="Profile name">
                 <Input
@@ -161,10 +161,10 @@ export function ProfileDialog({
                   </SelectContent>
                 </Select>
               </Field>
-            </motion.div>
+            </m.div>
 
             {/* Right column — credentials */}
-            <motion.div variants={item} className="grid content-start gap-4">
+            <m.div variants={item} className="grid content-start gap-4">
               <ColumnHeader>Credentials</ColumnHeader>
               <Field label="Username">
                 <Input
@@ -187,11 +187,11 @@ export function ProfileDialog({
                   onChange={(e) => setF({ ...f, cert_sha256: e.target.value })}
                 />
               </Field>
-            </motion.div>
+            </m.div>
           </div>
 
           {/* Danger toggle — full width */}
-          <motion.div variants={item} className="mt-5">
+          <m.div variants={item} className="mt-5">
             <div
               className={`flex items-center justify-between rounded-md border px-3 py-2.5 transition-colors ${
                 f.insecure ? "border-destructive/50 bg-destructive/10" : "border-line"
@@ -208,9 +208,9 @@ export function ProfileDialog({
                 onCheckedChange={(v) => setF({ ...f, insecure: v })}
               />
             </div>
-          </motion.div>
+          </m.div>
 
-          <motion.div variants={item}>
+          <m.div variants={item}>
             <DialogFooter className="mt-6 gap-2 sm:gap-2">
               <DialogClose asChild>
                 <Button variant="ghost">Cancel</Button>
@@ -219,8 +219,8 @@ export function ProfileDialog({
                 {initial ? "Save changes" : "Create profile"}
               </Button>
             </DialogFooter>
-          </motion.div>
-        </motion.div>
+          </m.div>
+        </m.div>
       </DialogContent>
     </Dialog>
   );

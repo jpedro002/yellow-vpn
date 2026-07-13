@@ -1,4 +1,4 @@
-import { motion, useReducedMotion } from "framer-motion";
+import { m, useReducedMotion } from "framer-motion";
 import { AlertTriangle, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { WintunState } from "@/hooks/useWintun";
@@ -22,7 +22,7 @@ export function SetupGate({ stage, downloaded, total, error, retry }: WintunStat
 
   return (
     <div className="flex w-full max-w-sm flex-col items-center gap-6 text-center">
-      <motion.img
+      <m.img
         src="/yellow_vpn_icon.svg"
         alt="Yellow VPN"
         className="h-16 w-16 rounded-2xl shadow-lg"
@@ -58,13 +58,13 @@ export function SetupGate({ stage, downloaded, total, error, retry }: WintunStat
           {/* Progress track */}
           <div className="relative h-2 w-full overflow-hidden rounded-full bg-secondary">
             {indeterminate ? (
-              <motion.span
+              <m.span
                 className="absolute inset-y-0 w-1/3 rounded-full bg-brand"
                 animate={reduce ? { x: 0 } : { x: ["-100%", "300%"] }}
                 transition={{ duration: 1.1, repeat: Infinity, ease: "easeInOut" }}
               />
             ) : (
-              <motion.span
+              <m.span
                 className="absolute inset-y-0 left-0 rounded-full bg-brand"
                 animate={{ width: `${pct}%` }}
                 transition={{ ease: "easeOut", duration: 0.2 }}

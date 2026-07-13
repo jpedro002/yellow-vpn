@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { motion, useReducedMotion, type Variants } from "framer-motion";
+import { m, useReducedMotion, type Variants } from "framer-motion";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Minus, X } from "lucide-react";
 import { toast } from "sonner";
@@ -87,14 +87,14 @@ export default function App() {
         />
       </div>
 
-      <motion.div
+      <m.div
         className="relative flex flex-1 flex-col"
         variants={container}
         initial="hidden"
         animate="show"
       >
         {/* Custom title bar (OS decoration is off) — drag region + window controls */}
-        <motion.header
+        <m.header
           variants={item}
           data-tauri-drag-region
           className="flex select-none items-center justify-between border-b border-line py-3 pl-6 pr-2"
@@ -139,7 +139,7 @@ export default function App() {
               </button>
             </div>
           </div>
-        </motion.header>
+        </m.header>
 
         {/* First-run driver setup gate, then the control panel */}
         {setup.stage !== "ready" ? (
@@ -148,7 +148,7 @@ export default function App() {
           </main>
         ) : (
           <main className="mx-auto grid w-full max-w-5xl flex-1 content-start gap-5 p-6 md:grid-cols-[1.05fr_1fr]">
-            <motion.div variants={item}>
+            <m.div variants={item}>
               <StatusHero
                 raw={raw}
                 active={selected}
@@ -156,8 +156,8 @@ export default function App() {
                 onConnect={handleConnect}
                 onDisconnect={() => disconnect()}
               />
-            </motion.div>
-            <motion.div variants={item}>
+            </m.div>
+            <m.div variants={item}>
               <ProfileList
                 profiles={profiles}
                 selectedId={selected?.id ?? null}
@@ -175,19 +175,19 @@ export default function App() {
                   await refresh();
                 }}
               />
-            </motion.div>
+            </m.div>
           </main>
         )}
 
         {/* Status bar */}
-        <motion.footer
+        <m.footer
           variants={item}
           className="flex items-center justify-between border-t border-line px-6 py-2.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground"
         >
           <span>{profiles.length} profile{profiles.length === 1 ? "" : "s"}</span>
           <span className="text-muted-foreground/60">yellow vpn · v0.1.0</span>
-        </motion.footer>
-      </motion.div>
+        </m.footer>
+      </m.div>
     </div>
   );
 }

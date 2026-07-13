@@ -1,4 +1,4 @@
-import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
+import { m, AnimatePresence, useReducedMotion } from "framer-motion";
 import { Profile, WireState, stateLabel } from "@/lib/vpn";
 import { Button } from "@/components/ui/button";
 
@@ -46,7 +46,7 @@ export function StatusHero({
             <span className={`signal-ring signal-ring-3 absolute h-24 w-24 rounded-full border ${ring}`} />
           </>
         )}
-        <motion.span
+        <m.span
           key={connected ? "on" : linking ? "link" : "off"}
           initial={reduce ? false : { scale: 0.6, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
@@ -64,7 +64,7 @@ export function StatusHero({
       {/* Status text */}
       <div className="h-12 text-center">
         <AnimatePresence mode="wait">
-          <motion.p
+          <m.p
             key={headline}
             initial={reduce ? false : { opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
@@ -73,7 +73,7 @@ export function StatusHero({
             className="text-2xl font-bold tracking-tight"
           >
             {headline}
-          </motion.p>
+          </m.p>
         </AnimatePresence>
         <p
           className={`mt-1 font-mono text-xs ${
@@ -100,7 +100,7 @@ export function StatusHero({
       )}
 
       {/* Action */}
-      <motion.div className="w-full" whileTap={reduce ? undefined : { scale: 0.98 }}>
+      <m.div className="w-full" whileTap={reduce ? undefined : { scale: 0.98 }}>
         {connected || linking ? (
           <Button
             variant="outline"
@@ -119,7 +119,7 @@ export function StatusHero({
             Connect
           </Button>
         )}
-      </motion.div>
+      </m.div>
     </section>
   );
 }

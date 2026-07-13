@@ -1,4 +1,4 @@
-import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
+import { m, AnimatePresence, useReducedMotion } from "framer-motion";
 import { Pencil, Trash2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Profile, NewProfile } from "@/lib/vpn";
@@ -50,15 +50,14 @@ export function ProfileList({
             {profiles.map((p, i) => {
               const active = selectedId === p.id;
               return (
-                <motion.li
+                <m.li
                   key={p.id}
-                  layout={!reduce}
                   initial={reduce ? false : { opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={reduce ? undefined : { opacity: 0, x: -12 }}
                   transition={{ duration: 0.2, delay: Math.min(i * 0.03, 0.15) }}
                 >
-                  <motion.div
+                  <m.div
                     role="button"
                     tabIndex={0}
                     whileTap={reduce ? undefined : { scale: 0.99 }}
@@ -111,8 +110,8 @@ export function ProfileList({
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </div>
-                  </motion.div>
-                </motion.li>
+                  </m.div>
+                </m.li>
               );
             })}
           </AnimatePresence>
