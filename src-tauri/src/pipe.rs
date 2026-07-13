@@ -91,13 +91,26 @@ pub async fn connect_with_spawn() -> io::Result<Client> {
 #[cfg(target_os = "macos")]
 pub fn spawn_helper_elevated() -> io::Result<()> {
     let path = helper_path()?;
+    // The path is interpolated into a shell command inside an AppleScript
+    // string that runs as ROOT. Characters that could escape either quoting
+    // layer (shell single quotes; AppleScript's `"`/`\`) must never reach it,
+    // and control characters could confuse the elevated shell. The bundled
+    // install path never contains these, so reject rather than escape.
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| io::Error::other("helper path is not valid UTF-8"))?;
+    if path_str.contains(['\'', '"', '\\', '`', '$']) || path_str.chars().any(|c| c.is_control()) {
+        return Err(io::Error::other(
+            "helper path contains characters unsafe for privileged execution",
+        ));
+    }
     // Pass our (unprivileged) uid so the root helper can lock the control socket
     // to exactly this user (chown + mode 0600), the mac equivalent of the
     // restricted-DACL pipe on Windows.
     let uid = unsafe { libc::getuid() };
     // Single-quote the path for the shell (handles spaces); AppleScript's own
     // string uses double quotes, so single quotes nest cleanly.
-    let shell_cmd = format!("'{}' {uid} >/dev/null 2>&1 &", path.to_string_lossy());
+    let shell_cmd = format!("'{path_str}' {uid} >/dev/null 2>&1 &");
     let script =
         format!("do shell script \"{shell_cmd}\" with administrator privileges");
 

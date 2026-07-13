@@ -11,6 +11,12 @@ use serde::Serialize;
 #[cfg(windows)]
 const WINTUN_URL: &str = "https://www.wintun.net/builds/wintun-0.14.1.zip";
 
+/// SHA-256 of the pinned release archive, as published on https://www.wintun.net.
+/// The DLL is loaded into the *elevated* helper, so the download must be
+/// integrity-checked, not just fetched over TLS.
+#[cfg(windows)]
+const WINTUN_ZIP_SHA256: &str = "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51";
+
 #[cfg(windows)]
 #[derive(Clone, Serialize)]
 pub struct Progress {
@@ -65,10 +71,30 @@ pub async fn ensure(app: &tauri::AppHandle) -> Result<bool, String> {
     let mut buf: Vec<u8> = Vec::with_capacity(total as usize);
     let _ = app.emit("wintun://progress", Progress { stage: "download", downloaded: 0, total });
 
+    // Emit progress at most every 256 KiB (plus a final event below) so a fast
+    // download doesn't flood the webview event bus with thousands of events.
+    const EMIT_STEP: u64 = 256 * 1024;
+    let mut last_emitted: u64 = 0;
     while let Some(chunk) = resp.chunk().await.map_err(|e| format!("download failed: {e}"))? {
         downloaded += chunk.len() as u64;
         buf.extend_from_slice(&chunk);
-        let _ = app.emit("wintun://progress", Progress { stage: "download", downloaded, total });
+        if downloaded - last_emitted >= EMIT_STEP {
+            last_emitted = downloaded;
+            let _ = app.emit("wintun://progress", Progress { stage: "download", downloaded, total });
+        }
+    }
+    let _ = app.emit("wintun://progress", Progress { stage: "download", downloaded, total });
+
+    // Integrity check: the archive must match the pinned release hash before
+    // anything is extracted or written to disk.
+    {
+        use sha2::{Digest, Sha256};
+        let got = format!("{:x}", Sha256::digest(&buf));
+        if got != WINTUN_ZIP_SHA256 {
+            return Err(format!(
+                "wintun archive integrity check failed (sha256 {got}, expected {WINTUN_ZIP_SHA256}) — refusing to install"
+            ));
+        }
     }
 
     // Extract the arch-matched DLL from the ZIP (in memory) and write it out.

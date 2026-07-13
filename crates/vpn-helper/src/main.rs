@@ -2,7 +2,7 @@
 //!
 //! Transport is per-OS but the serving logic is shared:
 //!   * Windows — a restricted named pipe (`\\.\pipe\yellow-vpn`).
-//!   * macOS/Linux — a Unix-domain socket (`/tmp/yellow-vpn.sock`).
+//!   * macOS/Linux — a Unix-domain socket (`/var/run/yellow-vpn/helper.sock`).
 //!
 //! In both cases the helper runs elevated (Administrator / root), owns the VPN
 //! engine, and speaks newline-delimited JSON (`vpn-ipc`) to the GUI.
@@ -488,7 +488,15 @@ mod unix_impl {
         // root-owned 0711, so no other user could have substituted this path.
         let _ = std::fs::remove_file(SOCKET_PATH);
 
-        let listener = match UnixListener::bind(SOCKET_PATH) {
+        // Bind under umask 0177 so the socket is created mode 0600 from the
+        // very first instant — without this there is a window between bind()
+        // and the chmod below where any local user could connect() and win
+        // the single-connection accept race against the real GUI.
+        let prev_umask =
+            nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o177));
+        let bind_result = UnixListener::bind(SOCKET_PATH);
+        nix::sys::stat::umask(prev_umask);
+        let listener = match bind_result {
             Ok(l) => l,
             Err(e) => {
                 tracing::error!(error = %e, "failed to bind socket");
@@ -512,12 +520,26 @@ mod unix_impl {
             return;
         }
 
-        let (stream, _addr) = match listener.accept().await {
-            Ok(pair) => pair,
-            Err(e) => {
-                tracing::error!(error = %e, "socket accept failed");
-                let _ = std::fs::remove_file(SOCKET_PATH);
-                return;
+        // Accept until the peer is the expected user. File permissions already
+        // gate connect(), but this defends in depth: peer credentials come
+        // from the kernel and can't be raced the way path perms can.
+        let stream = loop {
+            let (stream, _addr) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(e) => {
+                    tracing::error!(error = %e, "socket accept failed");
+                    let _ = std::fs::remove_file(SOCKET_PATH);
+                    return;
+                }
+            };
+            match stream.peer_cred() {
+                Ok(cred) if cred.uid() == uid.as_raw() || cred.uid() == 0 => break stream,
+                Ok(cred) => {
+                    tracing::warn!(peer_uid = cred.uid(), "rejected connection from unauthorized uid");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not read peer credentials — rejected connection");
+                }
             }
         };
         tracing::info!("GUI connected");
