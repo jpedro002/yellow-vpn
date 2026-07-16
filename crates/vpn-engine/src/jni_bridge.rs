@@ -10,12 +10,19 @@
 //! for each event and invoking the callback's `onState(String)` method.
 #![cfg(target_os = "android")]
 
+use std::sync::Mutex;
+
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 use jni::sys::{jboolean, jint};
 use jni::{JNIEnv, JavaVM};
 
 use crate::client::{run_client_supervised_android, ClientEvent};
 use crate::config::{Config, Protocol};
+
+/// Shutdown handle for the CURRENTLY running tunnel. Only one tunnel runs at a
+/// time; starting a new one signals the previous to stop first, and `stopEngine`
+/// (called from Kotlin on disconnect/teardown) flips it to end the tunnel.
+static ENGINE_SHUTDOWN: Mutex<Option<tokio::sync::watch::Sender<bool>>> = Mutex::new(None);
 
 /// Parse a hex SHA-256 fingerprint (optionally colon-separated) into 32 bytes.
 fn parse_fingerprint(s: &str) -> Option<[u8; 32]> {
@@ -109,9 +116,18 @@ pub extern "system" fn Java_app_yellowvpn_plugin_VpnBridge_runEngine(
         }
     };
 
-    // A1 has no external disconnect wire yet (that is A2); the tunnel runs until
-    // it ends on its own (permanent error) or the service tears down the fd.
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    // Stop any previous tunnel before starting this one — otherwise a second
+    // connect spawns a competing engine that fights over the TUN (endless
+    // reconnect war). Register this run's shutdown handle so disconnect works.
+    if let Ok(mut guard) = ENGINE_SHUTDOWN.lock() {
+        if let Some(old) = guard.take() {
+            let _ = old.send(true);
+        }
+    }
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    if let Ok(mut guard) = ENGINE_SHUTDOWN.lock() {
+        *guard = Some(shutdown_tx);
+    }
     let (etx, mut erx) = tokio::sync::mpsc::channel::<ClientEvent>(16);
 
     rt.block_on(async move {
@@ -141,6 +157,20 @@ pub extern "system" fn Java_app_yellowvpn_plugin_VpnBridge_runEngine(
             emit_state(&vm, &cb_global, &format!("error:{e}"));
         }
     });
+}
+
+/// Called by Kotlin on disconnect/teardown: signal the running tunnel to stop.
+/// Idempotent — no-op if nothing is running.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_yellowvpn_plugin_VpnBridge_stopEngine(
+    _env: JNIEnv,
+    _class: JClass,
+) {
+    if let Ok(mut guard) = ENGINE_SHUTDOWN.lock() {
+        if let Some(tx) = guard.take() {
+            let _ = tx.send(true);
+        }
+    }
 }
 
 /// Re-attach the current thread to the JVM and invoke `callback.onState(state)`.

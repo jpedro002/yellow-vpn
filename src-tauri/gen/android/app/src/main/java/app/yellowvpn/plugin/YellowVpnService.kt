@@ -38,6 +38,11 @@ class YellowVpnService : VpnService() {
     private var tun: ParcelFileDescriptor? = null
     @Volatile
     private var running = false
+    // Bumped on every connect. A finishing engine thread only tears the service
+    // down if it is still the current generation, so a replaced tunnel's thread
+    // can't kill the new one.
+    @Volatile
+    private var generation = 0
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_DISCONNECT) {
@@ -59,6 +64,14 @@ class YellowVpnService : VpnService() {
         val certSha256 = intent.getStringExtra("certSha256") ?: ""
 
         startForeground(NOTIFICATION_ID, buildNotification("Connecting…"))
+
+        // Replace any running tunnel: stop the old engine and close its fd before
+        // establishing a new one, so we never run two engines fighting over the TUN.
+        if (running) {
+            VpnBridge.stopEngine()
+            try { tun?.close() } catch (_: Exception) {}
+            tun = null
+        }
 
         // VpnService.Builder owns routes/DNS/MTU. A1 uses a full tunnel; split
         // ranges from the server come in A2. addDisallowedApplication excludes our
@@ -82,31 +95,38 @@ class YellowVpnService : VpnService() {
         }
         tun = pfd
         running = true
+        val myGen = ++generation
         val tunFd = pfd.fd
 
         thread(name = "yellow-vpn-engine") {
             VpnBridge.runEngine(host, port, user, pass, tunFd, protocol, insecure, certSha256, object : StateCallback {
                 override fun onState(state: String) {
+                    // Ignore late events from a superseded engine.
+                    if (generation != myGen) return
                     lastState = state
                     Log.i(TAG, "state=$state")
                     updateNotification(state)
                     stateListener?.invoke(state)
                 }
             })
-            // runEngine returned => tunnel ended.
-            if (running) teardown()
+            // runEngine returned => tunnel ended. Only tear the service down if we
+            // are still the current tunnel (a replacement bumps the generation).
+            if (generation == myGen && running) teardown()
         }
         return START_STICKY
     }
 
     private fun teardown() {
         running = false
+        generation++
+        VpnBridge.stopEngine()
         try {
             tun?.close()
         } catch (_: Exception) {
         }
         tun = null
         lastState = "disconnected"
+        stateListener?.invoke("disconnected")
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }

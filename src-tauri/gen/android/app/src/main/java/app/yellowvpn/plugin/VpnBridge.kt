@@ -36,4 +36,7 @@ object VpnBridge {
         certSha256: String, // hex SHA-256 fingerprint, empty for none
         cb: StateCallback,
     )
+
+    /** Signal the running tunnel to stop (disconnect / teardown). No-op if idle. */
+    external fun stopEngine()
 }

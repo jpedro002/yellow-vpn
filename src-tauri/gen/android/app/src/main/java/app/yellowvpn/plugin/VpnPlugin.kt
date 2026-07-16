@@ -85,9 +85,12 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     private fun emitState(state: String) {
-        val payload = JSObject()
-        payload.put("state", state)
-        trigger("state", payload)
+        // trigger() must reach the WebView; marshal off the engine thread.
+        activity.runOnUiThread {
+            val payload = JSObject()
+            payload.put("state", state)
+            trigger("state", payload)
+        }
     }
 
     companion object {
