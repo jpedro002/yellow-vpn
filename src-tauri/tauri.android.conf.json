@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeDevCommand": "bun run android:engine && bun run dev",
+    "beforeBuildCommand": "bun run android:engine --release && bun run build"
+  },
+  "bundle": {
+    "externalBin": []
+  }
+}

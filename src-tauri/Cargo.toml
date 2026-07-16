@@ -40,6 +40,12 @@ sha2 = "0.10"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Android drives the tunnel through the Kotlin VpnService plugin, reached from
+# these Rust commands over JNI (see src/android_vpn.rs).
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
 [profile.dev]
 incremental = true # Compile your binary in smaller steps.
 

@@ -2,6 +2,9 @@ mod pipe;
 mod profiles;
 mod wintun;
 
+#[cfg(target_os = "android")]
+mod android_vpn;
+
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -106,6 +109,7 @@ struct ConnectArgs {
     profile_name: String,
 }
 
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn vpn_connect(
     app: AppHandle,
@@ -226,6 +230,7 @@ async fn vpn_connect(
     Ok(())
 }
 
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn vpn_disconnect(state: State<'_, Shared>) -> Result<(), String> {
     let mut st = state.lock().await;
@@ -235,6 +240,46 @@ async fn vpn_disconnect(state: State<'_, Shared>) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         st.writer = Some(w);
     }
+    Ok(())
+}
+
+// Android: no elevated helper / pipe. Drive the Kotlin VpnService over JNI. The
+// command surface (name + args) matches the desktop version so the frontend and
+// `src/lib/vpn.ts` are unchanged.
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn vpn_connect(
+    app: AppHandle,
+    state: State<'_, Shared>,
+    args: ConnectArgs,
+) -> Result<(), String> {
+    state.lock().await.current_profile = Some(args.profile_name.clone());
+    // Reflect an immediate Connecting state; the Kotlin StateCallback forwards
+    // subsequent transitions (TODO(A2): wire the Kotlin->JS channel so
+    // established/error propagate without polling).
+    state.lock().await.status = WireState::Connecting;
+    let _ = app.emit("vpn://state", &ClientMessage::State(WireState::Connecting));
+
+    let status = android_vpn::connect(&args.config, &args.password)?;
+    if status == "consent-requested" {
+        // User must grant the system VPN dialog, then reconnect.
+        state.lock().await.status = WireState::Disconnected;
+        let _ = app.emit(
+            "vpn://state",
+            &ClientMessage::Error {
+                message: "VPN permission requested — grant it, then connect again".into(),
+                permanent: true,
+            },
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn vpn_disconnect(state: State<'_, Shared>) -> Result<(), String> {
+    android_vpn::disconnect()?;
+    state.lock().await.status = WireState::Disconnected;
     Ok(())
 }
 
@@ -250,6 +295,10 @@ pub fn run() {
         .manage::<Shared>(Arc::new(Mutex::new(VpnState::default())))
         .manage(Db::open(&db_path()).expect("failed to open profiles.db"))
         .setup(|app| {
+            // The system tray is a desktop-only affordance; Android uses the
+            // foreground-service notification instead (see YellowVpnService.kt).
+            #[cfg(desktop)]
+            {
             use tauri::menu::{Menu, MenuItem};
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
@@ -310,6 +359,7 @@ pub fn run() {
                 builder = builder.icon(icon.clone());
             }
             builder.build(app)?;
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

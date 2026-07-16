@@ -11,7 +11,10 @@
     "predev:helper": "node scripts/prepare-helper.mjs",
     "prebuild:helper": "node scripts/prepare-helper.mjs --release",
     "fetch:wintun": "node scripts/fetch-wintun.mjs",
-    "tauri:build": "bun run prebuild:helper && tauri build"
+    "tauri:build": "bun run prebuild:helper && tauri build",
+    "android:engine": "node scripts/build-android-engine.mjs",
+    "android:dev": "bun run android:engine && tauri android dev",
+    "android:build": "node scripts/build-android-engine.mjs --release && tauri android build"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.9",
