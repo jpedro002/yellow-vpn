@@ -77,6 +77,13 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
         invoke.resolve()
     }
 
+    @Command
+    fun status(invoke: Invoke) {
+        val o = JSObject()
+        o.put("state", VpnController.currentState())
+        invoke.resolve(o)
+    }
+
     private fun startTunnel(a: ConnectArgs) {
         VpnController.start(
             activity, a.host, a.port, a.username, a.password,

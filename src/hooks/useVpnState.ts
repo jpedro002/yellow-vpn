@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { addPluginListener } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import { ClientMessage, WireState, stateLabel } from "@/lib/vpn";
 import { IS_MOBILE } from "@/hooks/useIsMobile";
@@ -9,36 +9,34 @@ export function useVpnState() {
   const [raw, setRaw] = useState<WireState | null>(null);
 
   useEffect(() => {
-    // Mobile: the Kotlin VpnService plugin emits lowercase state strings
-    // ("connecting"/"established"/"reconnecting"/"disconnected"/"error:<msg>").
+    // Mobile: plugin JS events are ACL-blocked, so poll the app command
+    // vpn_status (which bridges to the Kotlin VpnService) for the tunnel state.
     if (IS_MOBILE) {
-      const un = addPluginListener(
-        "yellowvpn",
-        "state",
-        (e: { state: string }) => {
-          const s = e.state;
-          if (s === "established") {
-            setRaw("Established");
-            toast.success("Connected", { id: "vpn" });
-          } else if (s === "connecting") {
-            setRaw("Connecting");
-            toast.loading("Connecting…", { id: "vpn" });
-          } else if (s === "reconnecting") {
-            setRaw({ Reconnecting: { delay_secs: 0 } });
-            toast.warning("Reconnecting…", { id: "vpn" });
-          } else if (s.startsWith("error:")) {
-            setRaw("Disconnected");
-            toast.error(s.slice("error:".length) || "Connection error", {
-              id: "vpn",
-            });
-          } else {
-            setRaw("Disconnected");
-            toast("Disconnected", { id: "vpn" });
+      let alive = true;
+      let last = "";
+      const poll = async () => {
+        try {
+          const s = await invoke<WireState>("vpn_status");
+          if (!alive) return;
+          setRaw(s);
+          const key = stateLabel(s);
+          if (key !== last) {
+            last = key;
+            if (s === "Established") toast.success("Connected", { id: "vpn" });
+            else if (s === "Connecting") toast.loading("Connecting…", { id: "vpn" });
+            else if (typeof s === "object" && "Reconnecting" in s)
+              toast.warning("Reconnecting…", { id: "vpn" });
+            else if (s === "Disconnected") toast.dismiss("vpn");
           }
-        },
-      );
+        } catch {
+          /* ignore transient poll errors */
+        }
+      };
+      poll();
+      const iv = setInterval(poll, 1200);
       return () => {
-        un.then((h) => h.unregister());
+        alive = false;
+        clearInterval(iv);
       };
     }
 

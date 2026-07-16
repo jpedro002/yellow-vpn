@@ -299,9 +299,35 @@ async fn vpn_disconnect(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn vpn_status(state: State<'_, Shared>) -> Result<WireState, String> {
     Ok(state.lock().await.status.clone())
+}
+
+// Android: the frontend polls this (plugin JS events are ACL-blocked) to reflect
+// the tunnel state. Reads the Kotlin VpnService's current state via the plugin.
+#[cfg(target_os = "android")]
+#[derive(serde::Deserialize)]
+struct AndroidStatus {
+    state: String,
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn vpn_status(app: AppHandle) -> Result<WireState, String> {
+    let handle = app
+        .try_state::<tauri::plugin::PluginHandle<tauri::Wry>>()
+        .ok_or_else(|| "VPN plugin not initialized".to_string())?;
+    let r = handle
+        .run_mobile_plugin::<AndroidStatus>("status", ())
+        .map_err(|e| e.to_string())?;
+    Ok(match r.state.as_str() {
+        "established" => WireState::Established,
+        "connecting" => WireState::Connecting,
+        "reconnecting" => WireState::Reconnecting { delay_secs: 0.0 },
+        _ => WireState::Disconnected,
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
