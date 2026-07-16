@@ -14,8 +14,11 @@
 //! held alive across the forwarding loop — hence the crate-standard allow.
 #![allow(dead_code)]
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
+#[cfg(not(target_os = "android"))]
+use std::net::IpAddr;
 
+#[cfg(not(target_os = "android"))]
 use net_route::{Handle, Route};
 
 use crate::error::VpnError;
@@ -34,11 +37,13 @@ pub fn vpn_routes() -> Vec<(Ipv4Addr, u8)> {
 /// explicit async `remove_all()` (Drop cannot be async). `Drop` is a best-effort SAFETY
 /// NET: if routes remain (remove_all was never called), it logs a warning so orphaned
 /// routes are visible rather than silent (D-05).
+#[cfg(not(target_os = "android"))]
 pub struct RoutingGuard {
     handle: Handle,
     routes: Vec<Route>,
 }
 
+#[cfg(not(target_os = "android"))]
 impl RoutingGuard {
     /// Install the VPN routes so they egress the interface `ifindex` (the TUN device's
     /// index from `TunDevice::if_index()`). Handle::new() is sync; add() is async. On any
@@ -100,6 +105,7 @@ impl RoutingGuard {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 impl Drop for RoutingGuard {
     fn drop(&mut self) {
         if !self.routes.is_empty() {
@@ -115,7 +121,46 @@ impl Drop for RoutingGuard {
     }
 }
 
-#[cfg(test)]
+/// Android: routing is configured by `VpnService.Builder` on the Kotlin side, so
+/// the engine installs nothing. This guard exists only to keep `run_pipeline` and
+/// `forward::run_forwarding` free of `#[cfg]` — it holds nothing, and both
+/// `install_routes` and `remove_all` are no-ops.
+#[cfg(target_os = "android")]
+pub struct RoutingGuard;
+
+#[cfg(target_os = "android")]
+impl RoutingGuard {
+    pub async fn install(_ifindex: u32) -> Result<Self, VpnError> {
+        Self::install_routes(_ifindex, &[]).await
+    }
+
+    pub async fn install_routes(
+        _ifindex: u32,
+        _routes: &[(Ipv4Addr, u8)],
+    ) -> Result<Self, VpnError> {
+        tracing::info!("android: routes are configured by VpnService.Builder — engine no-op");
+        Ok(RoutingGuard)
+    }
+
+    pub async fn remove_all(&mut self) {}
+}
+
+#[cfg(all(test, target_os = "android"))]
+mod android_routing_tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    #[tokio::test]
+    async fn install_routes_is_noop_ok() {
+        let mut guard = RoutingGuard::install_routes(0, &[(Ipv4Addr::new(10, 0, 0, 0), 8)])
+            .await
+            .expect("android routing is a no-op and must succeed");
+        guard.remove_all().await;
+        drop(guard);
+    }
+}
+
+#[cfg(all(test, not(target_os = "android")))]
 mod tests {
     use super::*;
 
