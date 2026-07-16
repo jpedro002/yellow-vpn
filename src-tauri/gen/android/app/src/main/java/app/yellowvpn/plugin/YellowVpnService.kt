@@ -50,6 +50,9 @@ class YellowVpnService : VpnService() {
         val pass = intent.getStringExtra("pass") ?: ""
         val address = intent.getStringExtra("address") ?: "10.0.0.2"
         val mtu = intent.getIntExtra("mtu", 1400)
+        val protocol = intent.getIntExtra("protocol", 0)
+        val insecure = intent.getBooleanExtra("insecure", false)
+        val certSha256 = intent.getStringExtra("certSha256") ?: ""
 
         startForeground(NOTIFICATION_ID, buildNotification("Connecting…"))
 
@@ -78,7 +81,7 @@ class YellowVpnService : VpnService() {
         val tunFd = pfd.fd
 
         thread(name = "yellow-vpn-engine") {
-            VpnBridge.runEngine(host, port, user, pass, tunFd, object : StateCallback {
+            VpnBridge.runEngine(host, port, user, pass, tunFd, protocol, insecure, certSha256, object : StateCallback {
                 override fun onState(state: String) {
                     lastState = state
                     Log.i(TAG, "state=$state")
@@ -129,7 +132,7 @@ class YellowVpnService : VpnService() {
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("Yellow VPN")
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.stat_sys_vpn_ic)
+            .setSmallIcon(android.R.drawable.stat_sys_warning)
             .setOngoing(true)
             .build()
     }

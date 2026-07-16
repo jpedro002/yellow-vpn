@@ -10,7 +10,7 @@
 
 use jni::objects::{JObject, JValue};
 
-use vpn_ipc::WireConfig;
+use vpn_ipc::{WireConfig, WireProtocol};
 
 /// Call `VpnController.startFromNative(ctx, host, port, user, pass, address, mtu)`.
 /// Returns the Kotlin-side status string ("started" / "consent-requested").
@@ -19,21 +19,31 @@ pub fn connect(config: &WireConfig, password: &str) -> Result<String, String> {
         let host = env.new_string(&config.host).map_err(err)?;
         let user = env.new_string(&config.username).map_err(err)?;
         let pass = env.new_string(password).map_err(err)?;
+        let cert = env
+            .new_string(config.cert_sha256.clone().unwrap_or_default())
+            .map_err(err)?;
         // A1: address/MTU are placeholders until the session negotiates them;
         // the VpnService.Builder uses these to bring up the interface.
         let address = env.new_string("10.0.0.2").map_err(err)?;
+        let protocol: i32 = match config.protocol {
+            WireProtocol::AnyConnect => 0,
+            WireProtocol::Checkpoint => 1,
+        };
 
         let ret = env
             .call_static_method(
                 class,
                 "startFromNative",
-                "(Landroid/content/Context;Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;I)Ljava/lang/String;",
+                "(Landroid/content/Context;Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;IZLjava/lang/String;Ljava/lang/String;I)Ljava/lang/String;",
                 &[
                     JValue::from(&ctx),
                     JValue::from(&host),
                     JValue::Int(config.port as i32),
                     JValue::from(&user),
                     JValue::from(&pass),
+                    JValue::Int(protocol),
+                    JValue::Bool(config.insecure as u8),
+                    JValue::from(&cert),
                     JValue::from(&address),
                     JValue::Int(1400),
                 ],

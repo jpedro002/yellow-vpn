@@ -11,11 +11,24 @@
 #![cfg(target_os = "android")]
 
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
-use jni::sys::jint;
+use jni::sys::{jboolean, jint};
 use jni::{JNIEnv, JavaVM};
 
 use crate::client::{run_client_supervised_android, ClientEvent};
 use crate::config::{Config, Protocol};
+
+/// Parse a hex SHA-256 fingerprint (optionally colon-separated) into 32 bytes.
+fn parse_fingerprint(s: &str) -> Option<[u8; 32]> {
+    let hex: String = s.chars().filter(|c| !c.is_whitespace() && *c != ':').collect();
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
 
 /// Called by Kotlin:
 /// `external fun runEngine(host, port, user, pass, tunFd, cb: StateCallback)`.
@@ -34,11 +47,18 @@ pub extern "system" fn Java_app_yellowvpn_plugin_VpnBridge_runEngine(
     user: JString,
     pass: JString,
     tun_fd: jint,
+    protocol: jint,
+    insecure: jboolean,
+    cert_sha256: JString,
     callback: JObject,
 ) {
     let host: String = env.get_string(&host).map(Into::into).unwrap_or_default();
     let user: String = env.get_string(&user).map(Into::into).unwrap_or_default();
     let pass: String = env.get_string(&pass).map(Into::into).unwrap_or_default();
+    let cert: String = env
+        .get_string(&cert_sha256)
+        .map(Into::into)
+        .unwrap_or_default();
 
     // Hold a JVM handle + a global ref to the callback so we can re-attach the
     // thread and invoke the callback across await points (JNIEnv itself is !Send
@@ -64,9 +84,16 @@ pub extern "system" fn Java_app_yellowvpn_plugin_VpnBridge_runEngine(
         username: user,
         password: None, // password is passed separately to the run entry
         verbose: false,
-        cert_sha256: None,
-        insecure: false,
-        protocol: Protocol::AnyConnect, // A1 MVP protocol
+        cert_sha256: if cert.trim().is_empty() {
+            None
+        } else {
+            parse_fingerprint(&cert)
+        },
+        insecure: insecure != 0,
+        protocol: match protocol {
+            1 => Protocol::Checkpoint,
+            _ => Protocol::AnyConnect,
+        },
     };
 
     // Current-thread runtime: keeps every future (incl. the JNI state pump) on

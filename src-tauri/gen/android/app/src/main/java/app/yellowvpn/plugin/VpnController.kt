@@ -24,6 +24,9 @@ object VpnController {
         port: Int,
         user: String,
         pass: String,
+        protocol: Int = 0,
+        insecure: Boolean = false,
+        certSha256: String = "",
         address: String = "10.0.0.2",
         mtu: Int = 1400,
     ) {
@@ -33,6 +36,9 @@ object VpnController {
             putExtra("port", port)
             putExtra("user", user)
             putExtra("pass", pass)
+            putExtra("protocol", protocol)
+            putExtra("insecure", insecure)
+            putExtra("certSha256", certSha256)
             putExtra("address", address)
             putExtra("mtu", mtu)
         }
@@ -62,6 +68,9 @@ object VpnController {
         port: Int,
         user: String,
         pass: String,
+        protocol: Int,
+        insecure: Boolean,
+        certSha256: String,
         address: String,
         mtu: Int,
     ): String {
@@ -71,7 +80,7 @@ object VpnController {
             ctx.startActivity(consent)
             return "consent-requested"
         }
-        start(ctx, host, port, user, pass, address, mtu)
+        start(ctx, host, port, user, pass, protocol, insecure, certSha256, address, mtu)
         return "started"
     }
 

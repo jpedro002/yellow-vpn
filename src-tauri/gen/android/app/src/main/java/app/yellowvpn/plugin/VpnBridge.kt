@@ -31,6 +31,9 @@ object VpnBridge {
         user: String,
         pass: String,
         tunFd: Int,
+        protocol: Int, // 0 = AnyConnect, 1 = Checkpoint
+        insecure: Boolean,
+        certSha256: String, // hex SHA-256 fingerprint, empty for none
         cb: StateCallback,
     )
 }
