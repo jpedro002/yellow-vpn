@@ -35,6 +35,16 @@ export default function App() {
   const [selected, setSelected] = useState<Profile | null>(null);
   const reduce = useReducedMotion();
   const isMobile = useIsMobile();
+  // Optimistic "Connecting" so the UI reacts instantly on tap. On mobile the
+  // state is polled (~1.2s) and a fast connect can jump straight to Established,
+  // skipping Connecting; this bridges that gap until the real state arrives.
+  const [pending, setPending] = useState(false);
+  useEffect(() => {
+    if (raw === "Established" || raw === "Disconnected" || (raw && typeof raw === "object"))
+      setPending(false);
+  }, [raw]);
+  const shownRaw =
+    pending && (raw == null || raw === "Disconnected") ? ("Connecting" as const) : raw;
 
   async function refresh() {
     const list = await listProfiles();
@@ -47,6 +57,7 @@ export default function App() {
 
   async function handleConnect() {
     if (!selected) return;
+    setPending(true);
     try {
       await connectProfile(selected);
     } catch (e) {
@@ -56,10 +67,11 @@ export default function App() {
           ? "Connection needs administrator access — approve the prompt to continue."
           : `Couldn't start the connection: ${msg}`,
       );
+      setPending(false);
     }
   }
 
-  const t = tone(raw);
+  const t = tone(shownRaw);
 
   const container: Variants = {
     hidden: {},
@@ -163,11 +175,14 @@ export default function App() {
           <main className="mx-auto grid w-full max-w-5xl flex-1 content-start gap-5 p-6 md:grid-cols-[1.05fr_1fr]">
             <m.div variants={item}>
               <StatusHero
-                raw={raw}
+                raw={shownRaw}
                 active={selected}
                 canConnect={!!selected}
                 onConnect={handleConnect}
-                onDisconnect={() => disconnect()}
+                onDisconnect={() => {
+                  setPending(false);
+                  disconnect();
+                }}
               />
             </m.div>
             <m.div variants={item}>
