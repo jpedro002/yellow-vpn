@@ -39,9 +39,6 @@
     "externalBin": [
       "binaries/yellow-vpn-helper"
     ],
-    "resources": {
-      "resources/wintun.dll": ""
-    },
     "macOS": {
       "entitlements": "entitlements.plist",
       "minimumSystemVersion": "10.15",
