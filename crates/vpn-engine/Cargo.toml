@@ -6,6 +6,9 @@ version.workspace = true
 
 [lib]
 name = "vpn_engine"
+# `lib` for the desktop crates that link the engine; `cdylib` so the Android
+# build produces a `libvpn_engine.so` the Kotlin VpnService loads via JNI.
+crate-type = ["lib", "cdylib"]
 
 [dependencies]
 tokio = { workspace = true }
@@ -29,3 +32,7 @@ windows-sys = { workspace = true, features = [
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["user", "net"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+libc = "0.2"

@@ -20,5 +20,15 @@ mod windows;
 #[cfg(target_os = "windows")]
 pub use windows::*;
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-compile_error!("unsupported target platform: only linux, macos, and windows are supported");
+#[cfg(target_os = "android")]
+mod android;
+#[cfg(target_os = "android")]
+pub use android::*;
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "android"
+)))]
+compile_error!("unsupported target platform: only linux, macos, windows, and android are supported");
