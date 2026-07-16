@@ -59,6 +59,13 @@ pub extern "system" fn Java_app_yellowvpn_plugin_VpnBridge_runEngine(
     cert_sha256: JString,
     callback: JObject,
 ) {
+    // Engine logs go to stderr, which Android surfaces in logcat under the
+    // RustStdoutStderr tag. try_init so repeated connects don't panic.
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(std::io::stderr)
+        .try_init();
+
     let host: String = env.get_string(&host).map(Into::into).unwrap_or_default();
     let user: String = env.get_string(&user).map(Into::into).unwrap_or_default();
     let pass: String = env.get_string(&pass).map(Into::into).unwrap_or_default();
