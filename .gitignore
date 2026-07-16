@@ -13,3 +13,6 @@ src-tauri/binaries/
 /yellow-vpn/
 # macOS
 .DS_Store
+
+*.jks
+*.jks.base64
