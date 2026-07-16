@@ -19,7 +19,6 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "logg
 webpki-roots = "0.26"
 bytes = "1"
 tun = { version = "0.7", features = ["async"] }
-net-route = "0.4"
 sha2 = "0.10"
 thiserror = "1"
 
@@ -32,6 +31,11 @@ windows-sys = { workspace = true, features = [
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["user", "net"] }
+
+# net-route only supports desktop OSes; Android routing is done by
+# VpnService.Builder, so the engine doesn't link it there.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+net-route = "0.4"
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"

@@ -14,6 +14,13 @@ use crate::error::VpnError;
 use crate::framer::{CstpTunnelFramer, SlimTunnelFramer, TunnelFramer};
 use crate::{auth, forward, routing, signal, tun_device, tunnel};
 
+// Android only: the TUN fd opened by the system `VpnService`, injected into the
+// connection task so `run_pipeline` wraps it instead of opening `/dev/net/tun`.
+#[cfg(target_os = "android")]
+tokio::task_local! {
+    static ANDROID_TUN_FD: std::os::fd::RawFd;
+}
+
 /// State transitions surfaced to an out-of-process supervisor (the GUI helper).
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
@@ -101,12 +108,27 @@ async fn run_pipeline(
     established: &mut bool,
     events: &tokio::sync::mpsc::Sender<ClientEvent>,
 ) -> Result<(), VpnError> {
-    let tun = tun_device::open_tun(params).await?;
-    tracing::info!(interface = %tun.name(), "TUN interface ready");
+    #[cfg(not(target_os = "android"))]
+    let (tun, routing) = {
+        let tun = tun_device::open_tun(params).await?;
+        tracing::info!(interface = %tun.name(), "TUN interface ready");
 
-    let ifindex = tun.if_index()?;
-    let routing = routing::RoutingGuard::install_routes(ifindex, routes).await?;
-    tracing::info!(ifindex, route_count = routes.len(), "VPN routes installed");
+        let ifindex = tun.if_index()?;
+        let routing = routing::RoutingGuard::install_routes(ifindex, routes).await?;
+        tracing::info!(ifindex, route_count = routes.len(), "VPN routes installed");
+        (tun, routing)
+    };
+    // Android: the TUN fd is opened by the system VpnService and injected via a
+    // task-local; routes/DNS/MTU are set by VpnService.Builder, so the engine
+    // wraps the fd and installs no OS routes (RoutingGuard is a no-op here).
+    #[cfg(target_os = "android")]
+    let (tun, routing) = {
+        let fd = ANDROID_TUN_FD.get();
+        let tun = tun_device::open_tun_from_fd(fd, params)?;
+        tracing::info!("android: wrapped VpnService TUN fd");
+        let routing = routing::RoutingGuard::install_routes(0, routes).await?;
+        (tun, routing)
+    };
 
     let keepalive_secs = params.keepalive.unwrap_or(30) as u64;
     tracing::info!(
@@ -304,6 +326,25 @@ pub async fn run_client_supervised(
             }
         }
     }
+}
+
+/// Android entry: same reconnect/supervision loop as [`run_client_supervised`],
+/// but the TUN fd (opened by the system `VpnService`) is injected via a
+/// task-local that `run_pipeline` reads instead of opening `/dev/net/tun`.
+#[cfg(target_os = "android")]
+pub async fn run_client_supervised_android(
+    config: &Config,
+    password: &str,
+    tun_fd: std::os::fd::RawFd,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    events: tokio::sync::mpsc::Sender<ClientEvent>,
+) -> Result<(), VpnError> {
+    ANDROID_TUN_FD
+        .scope(
+            tun_fd,
+            run_client_supervised(config, password, shutdown_rx, events),
+        )
+        .await
 }
 
 #[cfg(test)]
