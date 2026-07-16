@@ -7,8 +7,14 @@ import {
   DialogTitle,
   DialogFooter,
   DialogTrigger,
-  DialogClose,
 } from "@/components/ui/dialog";
+import {
+  Drawer,
+  DrawerContent,
+  DrawerFooter,
+  DrawerTrigger,
+} from "@/components/ui/drawer";
+import { useIsMobile } from "@/hooks/useIsMobile";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -72,6 +78,7 @@ export function ProfileDialog({
   const [open, setOpen] = useState(false);
   const [f, setF] = useState<NewProfile>(empty);
   const reduce = useReducedMotion();
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     if (open) setF(initial ? { ...initial } : empty);
@@ -96,29 +103,36 @@ export function ProfileDialog({
     show: { opacity: 1, y: 0, transition: { duration: 0.22, ease: "easeOut" } },
   };
 
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-2xl">
-        <div className="h-1 w-full bg-brand" />
-        <m.div
-          className="p-6"
-          variants={container}
-          initial="hidden"
-          animate="show"
-        >
-          <m.div variants={item}>
-            <DialogHeader className="mb-5">
-              <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-brand">
-                {initial ? "Edit connection" : "New connection"}
-              </p>
-              <DialogTitle className="text-xl">
-                {initial ? initial.name || "Profile" : "Configure profile"}
-              </DialogTitle>
-            </DialogHeader>
-          </m.div>
+  const heading = (
+    <m.div variants={item}>
+      <DialogHeader className="mb-5">
+        <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-brand">
+          {initial ? "Edit connection" : "New connection"}
+        </p>
+        <DialogTitle className="text-xl">
+          {initial ? initial.name || "Profile" : "Configure profile"}
+        </DialogTitle>
+      </DialogHeader>
+    </m.div>
+  );
 
-          <div className="grid grid-cols-2 gap-x-6 gap-y-5">
+  const actions = (
+    <>
+      <Button variant="ghost" onClick={() => setOpen(false)}>
+        Cancel
+      </Button>
+      <Button onClick={save} disabled={!valid} className="font-semibold">
+        {initial ? "Save changes" : "Create profile"}
+      </Button>
+    </>
+  );
+
+  // The form body is identical across desktop/mobile; only the shell differs
+  // (centered Dialog on desktop, bottom Drawer on mobile). The two-column grid
+  // collapses to a single column on narrow screens.
+  const fields = (
+    <>
+          <div className="grid grid-cols-1 gap-x-6 gap-y-5 sm:grid-cols-2">
             {/* Left column — gateway */}
             <m.div variants={item} className="grid content-start gap-4">
               <ColumnHeader>Gateway</ColumnHeader>
@@ -209,16 +223,49 @@ export function ProfileDialog({
               />
             </div>
           </m.div>
+    </>
+  );
 
+  // Mobile: bottom drawer (more responsive, thumb-friendly, matches the platform).
+  if (isMobile) {
+    return (
+      <Drawer open={open} onOpenChange={setOpen}>
+        <DrawerTrigger asChild>{trigger}</DrawerTrigger>
+        <DrawerContent>
+          <div className="h-1 w-full bg-brand" />
+          <m.div
+            className="overflow-y-auto px-5 pt-4"
+            variants={container}
+            initial="hidden"
+            animate="show"
+          >
+            {heading}
+            {fields}
+          </m.div>
+          <DrawerFooter className="flex-row justify-end gap-2 border-t border-line">
+            {actions}
+          </DrawerFooter>
+        </DrawerContent>
+      </Drawer>
+    );
+  }
+
+  // Desktop: centered dialog.
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-2xl">
+        <div className="h-1 w-full bg-brand" />
+        <m.div
+          className="p-6"
+          variants={container}
+          initial="hidden"
+          animate="show"
+        >
+          {heading}
+          {fields}
           <m.div variants={item}>
-            <DialogFooter className="mt-6 gap-2 sm:gap-2">
-              <DialogClose asChild>
-                <Button variant="ghost">Cancel</Button>
-              </DialogClose>
-              <Button onClick={save} disabled={!valid} className="font-semibold">
-                {initial ? "Save changes" : "Create profile"}
-              </Button>
-            </DialogFooter>
+            <DialogFooter className="mt-6 gap-2 sm:gap-2">{actions}</DialogFooter>
           </m.div>
         </m.div>
       </DialogContent>

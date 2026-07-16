@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { useVpnState } from "@/hooks/useVpnState";
 import { useWintun } from "@/hooks/useWintun";
+import { useIsMobile } from "@/hooks/useIsMobile";
 import { StatusHero } from "@/components/StatusHero";
 import { ProfileList } from "@/components/ProfileList";
 import { SetupGate } from "@/components/SetupGate";
@@ -33,6 +34,7 @@ export default function App() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [selected, setSelected] = useState<Profile | null>(null);
   const reduce = useReducedMotion();
+  const isMobile = useIsMobile();
 
   async function refresh() {
     const list = await listProfiles();
@@ -68,10 +70,16 @@ export default function App() {
     show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] } },
   };
 
-  const win = getCurrentWindow();
+  // Window controls exist only on desktop (custom OS decoration). On mobile the
+  // OS owns the window chrome, so there is no Tauri window to drive.
+  const win = isMobile ? null : getCurrentWindow();
 
   return (
-    <div className="relative flex h-full flex-col overflow-hidden rounded-xl border border-line bg-background text-foreground">
+    <div
+      className={`relative flex h-full flex-col overflow-hidden bg-background text-foreground ${
+        isMobile ? "" : "rounded-xl border border-line"
+      }`}
+    >
       <Toaster theme="dark" richColors position="bottom-right" />
 
       {/* Ambient atmosphere */}
@@ -93,11 +101,14 @@ export default function App() {
         initial="hidden"
         animate="show"
       >
-        {/* Custom title bar (OS decoration is off) — drag region + window controls */}
+        {/* Desktop: custom title bar (OS decoration off) — drag region + window
+            controls. Mobile: a plain header; the OS draws the status bar, so we
+            just pad for the safe-area inset and show branding + status. */}
         <m.header
           variants={item}
-          data-tauri-drag-region
+          {...(isMobile ? {} : { "data-tauri-drag-region": true })}
           className="flex select-none items-center justify-between border-b border-line py-3 pl-6 pr-2"
+          style={isMobile ? { paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)" } : undefined}
         >
           <div className="pointer-events-none flex items-center gap-2.5">
             <img
@@ -122,22 +133,24 @@ export default function App() {
               </span>
               <span className={`uppercase tracking-widest ${t.text}`}>{t.label}</span>
             </div>
-            <div className="flex items-center">
-              <button
-                aria-label="Minimize"
-                onClick={() => win.minimize()}
-                className="flex h-8 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-              >
-                <Minus className="h-4 w-4" />
-              </button>
-              <button
-                aria-label="Close to tray"
-                onClick={() => win.close()}
-                className="flex h-8 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive hover:text-white"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
+            {!isMobile && win && (
+              <div className="flex items-center">
+                <button
+                  aria-label="Minimize"
+                  onClick={() => win.minimize()}
+                  className="flex h-8 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                >
+                  <Minus className="h-4 w-4" />
+                </button>
+                <button
+                  aria-label="Close to tray"
+                  onClick={() => win.close()}
+                  className="flex h-8 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive hover:text-white"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            )}
           </div>
         </m.header>
 
