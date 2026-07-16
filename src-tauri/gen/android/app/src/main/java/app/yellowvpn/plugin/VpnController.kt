@@ -106,7 +106,7 @@ object VpnController {
             activity.startActivityForResult(consent, REQ_CONSENT)
             false
         } else {
-            start(activity, host, port, user, pass, address, mtu)
+            start(activity, host, port, user, pass, address = address, mtu = mtu)
             true
         }
     }
