@@ -43,9 +43,11 @@ jobs:
           - platform: macos-latest
             target: aarch64-apple-darwin
             args: "--target aarch64-apple-darwin"
-          # macos-13 is the last Intel-host runner, so x86_64 builds natively
-          # (no cross-compile) and ships a bundle for Intel Macs.
-          - platform: macos-13
+          # Intel bundle. GitHub's Intel-host runners (macos-13) are scarce and
+          # jobs can hang waiting for one, so cross-compile x86_64 on the arm64
+          # macos-latest host — the frontend is arch-agnostic JS and the Rust
+          # crates cross-compile with the target toolchain installed.
+          - platform: macos-latest
             target: x86_64-apple-darwin
             args: "--target x86_64-apple-darwin"
           - platform: ubuntu-latest
