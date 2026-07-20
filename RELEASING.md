@@ -1,8 +1,15 @@
 # Releasing Yellow VPN
 
-Releases are **tag-driven**. Pushing a `vX.Y.Z` tag triggers
-[`.github/workflows/release.yml`](.github/workflows/release.yml), which builds
-every platform and publishes them to a GitHub Release for that tag.
+Releases are **push-to-master driven**. Pushing a version bump to `master`
+triggers [`.github/workflows/release.yml`](.github/workflows/release.yml): a
+`check` job releases only when `tauri.conf.json`'s version is higher than the
+latest `vX.Y.Z` tag, then CI creates the tag, builds every platform, and
+publishes them to a GitHub Release. **Do not create the tag yourself** — CI does.
+
+Why not tag-triggered: GitHub Actions cache is scoped by ref, and a cache
+written on a tag ref cannot be restored from a sibling tag. Only default-branch
+(`master`) caches are shared to every run, so building on `master` is what lets
+rust-cache/gradle actually reuse their caches between releases.
 
 ## TL;DR
 
@@ -10,12 +17,11 @@ every platform and publishes them to a GitHub Release for that tag.
 bun scripts/bump-version.mjs patch   # or minor | major | 1.4.0
 # review the diff, then run the commands the script prints:
 git commit -am "chore(release): vX.Y.Z"
-git tag vX.Y.Z
-git push origin HEAD --follow-tags
+git push origin HEAD
 ```
 
-That's it — CI does the rest. Watch it under the repo's **Actions** tab; assets
-land on the **Releases** page when it finishes.
+That's it — CI does the rest (tag included). Watch it under the repo's
+**Actions** tab; assets land on the **Releases** page when it finishes.
 
 ## What the bump script does
 
@@ -43,8 +49,8 @@ would not grow it.
 | `desktop` (Linux) | `ubuntu-latest` | `.deb` / `.AppImage` |
 | `android` | `ubuntu-latest` | signed arm64 `.apk` |
 
-The `validate` job fails the whole run if the pushed tag doesn't match
-`tauri.conf.json` — so bump **before** tagging.
+The `check` job skips the whole run unless `tauri.conf.json`'s version is
+strictly higher than the latest `vX.Y.Z` tag — so **bump before pushing**.
 
 macOS bundles are ad-hoc signed (`signingIdentity: "-"`); Windows/Linux are
 unsigned. No Tauri auto-updater is configured.

@@ -71,6 +71,10 @@ bumpCargo("Cargo.toml");
 
 console.log(`\nBumped ${current} -> ${next}. Next steps:\n`);
 console.log(`  git commit -am "chore(release): v${next}"`);
-console.log(`  git tag v${next}`);
-console.log(`  git push origin HEAD --follow-tags`);
-console.log(`\nPushing the v${next} tag triggers .github/workflows/release.yml.`);
+console.log(`  git push origin HEAD`);
+console.log(
+  `\nDo NOT create the tag yourself. Pushing to master triggers`,
+);
+console.log(
+  `.github/workflows/release.yml, which builds, publishes, and creates the v${next} tag.`,
+);
