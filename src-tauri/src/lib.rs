@@ -332,6 +332,16 @@ async fn vpn_status(app: AppHandle) -> Result<WireState, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebKitGTK's DMA-BUF renderer crashes on launch on many modern Linux
+    // setups (Ubuntu 24.04+, Nvidia, some compositors), so a freshly-installed
+    // .deb/.AppImage "won't open" — the process dies before a window appears.
+    // Disabling it forces the software/GL path and is the documented workaround.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        // SAFETY: set before any window/webview thread is spawned (single-threaded here).
+        unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
+    }
+
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init());

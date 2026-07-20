@@ -106,7 +106,7 @@ export default function App() {
         />
       </div>
 
-      <Reveal reduce={reduce} className="relative flex flex-1 flex-col">
+      <Reveal reduce={reduce} className="relative flex min-h-0 flex-1 flex-col">
         {/* Desktop: custom title bar (OS decoration off) — drag region + window
             controls. Mobile: a plain header; the OS draws the status bar, so we
             just pad for the safe-area inset and show branding + status. */}
@@ -166,7 +166,7 @@ export default function App() {
             <SetupGate {...setup} />
           </main>
         ) : (
-          <main className="mx-auto grid w-full max-w-5xl flex-1 content-start gap-5 p-6 md:grid-cols-[1.05fr_1fr]">
+          <main className="mx-auto grid min-h-0 w-full max-w-5xl flex-1 content-start gap-5 overflow-y-auto p-6 md:grid-cols-[1.05fr_1fr]">
             <div data-reveal-item>
               <StatusHero
                 raw={shownRaw}
