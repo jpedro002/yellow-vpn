@@ -1,38 +1,68 @@
 name: Release
 
-# Manual, tag-driven release. Bump the version with
-# `bun scripts/bump-version.mjs <patch|minor|major|x.y.z>`, commit, then push a
-# `vX.Y.Z` tag — that push triggers this workflow. See RELEASING.md.
+# Auto-release on push to master. Bump the version with
+# `bun scripts/bump-version.mjs <patch|minor|major|x.y.z>`, commit, and push to
+# master — the `check` job releases only when tauri.conf.json's version is
+# higher than the latest vX.Y.Z tag. See RELEASING.md.
+#
+# Why push-to-master instead of tag-triggered: GitHub Actions cache is scoped by
+# ref, and a cache written on a tag ref is NOT restorable from a sibling tag.
+# Only default-branch (master) caches are shared to every run. Building on master
+# lets rust-cache/gradle actually reuse their caches across releases.
 on:
   push:
-    tags: ["v*"]
+    branches: [master]
 
 permissions:
   contents: write
 
 jobs:
-  # Fail fast if the pushed tag does not match tauri.conf.json (the version
-  # source of truth). Prevents shipping a bundle whose in-app version lies.
-  validate:
+  # Gate: release only when the version in tauri.conf.json (the source of truth)
+  # is strictly higher than the highest existing vX.Y.Z tag. Every other push to
+  # master runs this cheap job and stops here.
+  check:
     runs-on: ubuntu-latest
     outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
       version: ${{ steps.check.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-      - name: Validate tag == tauri.conf.json version
+        with:
+          fetch-depth: 0
+      - name: Check version bumped past latest tag
         id: check
         run: |
           VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::tag $GITHUB_REF_NAME != tauri.conf.json v$VERSION — run bump-version.mjs first"
-            exit 1
-          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          LAST=$(git tag -l 'v*' | sed 's/^v//' | sort -V | tail -n1)
+          if [ -z "$LAST" ]; then
+            echo "No prior tag — releasing $VERSION."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HIGHEST=$(printf '%s\n%s\n' "$VERSION" "$LAST" | sort -V | tail -n1)
+          if [ "$VERSION" != "$LAST" ] && [ "$HIGHEST" = "$VERSION" ]; then
+            echo "Version $VERSION > $LAST — releasing."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version $VERSION <= $LAST — skipping."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Create the tag up front (matches the old tag-first behavior) so the
+      # matrix desktop jobs all attach to one existing tag. Trigger is
+      # branches-only, so pushing this tag does NOT re-run the workflow.
+      - name: Create and push tag
+        if: steps.check.outputs.should_release == 'true'
+        run: |
+          git tag "v${{ steps.check.outputs.version }}"
+          git push origin "v${{ steps.check.outputs.version }}"
 
   # Desktop bundles. tauri-action creates (or reuses) the GitHub Release for the
-  # pushed tag and uploads each platform's installers to it.
+  # tag and uploads each platform's installers to it.
   desktop:
-    needs: validate
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -95,8 +125,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tauriScript: bunx tauri
-          tagName: ${{ github.ref_name }}
-          releaseName: "Yellow VPN v${{ needs.validate.outputs.version }}"
+          tagName: "v${{ needs.check.outputs.version }}"
+          releaseName: "Yellow VPN v${{ needs.check.outputs.version }}"
           releaseBody: "See the assets below to download and install."
           releaseDraft: false
           prerelease: false
@@ -105,7 +135,8 @@ jobs:
   # Signed Android APK. Built on the desktop job's release so it uploads into the
   # same GitHub Release.
   android:
-    needs: [validate, desktop]
+    needs: [check, desktop]
+    if: needs.check.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -154,12 +185,13 @@ jobs:
       - name: Upload APK to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: "v${{ needs.check.outputs.version }}"
         run: |
           APK=$(find src-tauri/gen/android -path '*/release/*-release.apk' | head -n1)
           if [ -z "$APK" ]; then echo "::error::no signed release APK found"; exit 1; fi
-          cp "$APK" "yellow-vpn-${{ needs.validate.outputs.version }}-arm64.apk"
-          gh release upload "$GITHUB_REF_NAME" \
-            "yellow-vpn-${{ needs.validate.outputs.version }}-arm64.apk" --clobber
+          cp "$APK" "yellow-vpn-${{ needs.check.outputs.version }}-arm64.apk"
+          gh release upload "$TAG" \
+            "yellow-vpn-${{ needs.check.outputs.version }}-arm64.apk" --clobber
 
       - name: Clean up keystore
         if: always()
