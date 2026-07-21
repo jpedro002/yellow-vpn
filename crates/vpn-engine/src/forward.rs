@@ -52,6 +52,7 @@ pub async fn run_forwarding(
     mut framer: Box<dyn TunnelFramer>,
     mtu: u16,
     keepalive_secs: u64,
+    prime: BytesMut,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), VpnError> {
     // Split TLS with tokio::io::split (NOT into_split — tokio-rustls has no into_split; STATE.md).
@@ -71,7 +72,10 @@ pub async fn run_forwarding(
     // Inbound TLS accumulator. `read_buf` into this persistent buffer is CANCELLATION-SAFE:
     // if a sibling select! arm wins while bytes are only partially received, nothing is lost —
     // the partial frame stays buffered here and the framer decodes it once complete (TD-1 fix).
+    // Seed it with any bytes the protocol layer already read past the handshake (FortiGate's
+    // tunnel-upgrade response can carry the first frames glued to it); empty for CSTP/SLIM.
     let mut inbound = BytesMut::with_capacity(HEADER_SLACK + mtu as usize + 16);
+    inbound.extend_from_slice(&prime);
 
     // Keepalive interval: server-dictated, floored at 1s so it never busy-loops.
     let interval_secs = keepalive_secs.max(1);
@@ -101,17 +105,22 @@ pub async fn run_forwarding(
                 break 'forward Ok(());
             }
 
-            // Client-initiated keepalive/liveness tick.
+            // Client-initiated keepalive/liveness tick. A framer with no keepalive
+            // frame (empty buffer, e.g. FortiGate) opts out of active DPD: send
+            // nothing and do not count missed intervals — liveness then rests on
+            // TLS EOF detection in the inbound arm.
             _ = ka_timer.tick() => {
                 let frame = framer.encode_keepalive();
-                if let Err(e) = tls_write.write_all(&frame).await { break 'forward Err(VpnError::from(e)); }
-                if let Err(e) = tls_write.flush().await { break 'forward Err(VpnError::from(e)); }
-                missed += 1;
-                if missed >= MAX_MISSED_KEEPALIVES {
-                    // Peer unresponsive across several intervals — transient, reconnect.
-                    break 'forward Err(VpnError::Protocol(
-                        "peer unresponsive (missed keepalives)".into(),
-                    ));
+                if !frame.is_empty() {
+                    if let Err(e) = tls_write.write_all(&frame).await { break 'forward Err(VpnError::from(e)); }
+                    if let Err(e) = tls_write.flush().await { break 'forward Err(VpnError::from(e)); }
+                    missed += 1;
+                    if missed >= MAX_MISSED_KEEPALIVES {
+                        // Peer unresponsive across several intervals — transient, reconnect.
+                        break 'forward Err(VpnError::Protocol(
+                            "peer unresponsive (missed keepalives)".into(),
+                        ));
+                    }
                 }
             }
 

@@ -6,6 +6,7 @@ pub mod checkpoint;
 pub mod client;
 pub mod config;
 pub mod error;
+pub mod fortigate;
 pub mod forward;
 pub mod framer;
 pub mod platform;

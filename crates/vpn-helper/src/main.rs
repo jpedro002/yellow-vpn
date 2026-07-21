@@ -40,6 +40,7 @@ mod proto {
             protocol: match w.protocol {
                 WireProtocol::AnyConnect => Protocol::AnyConnect,
                 WireProtocol::Checkpoint => Protocol::Checkpoint,
+                WireProtocol::FortiGate => Protocol::FortiGate,
             },
         })
     }

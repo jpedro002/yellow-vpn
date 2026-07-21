@@ -12,6 +12,7 @@ use bytes::BytesMut;
 
 use crate::checkpoint::framing::{self, SlimPacket};
 use crate::error::VpnError;
+use crate::fortigate::framing as forti;
 use crate::tunnel::{self, CstpType};
 
 /// The protocol-agnostic result of decoding one inbound frame — what the forward
@@ -147,6 +148,38 @@ impl TunnelFramer for SlimTunnelFramer {
             },
         };
         Ok(Some(event))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FortiGate SSL VPN (v0.3)
+// ---------------------------------------------------------------------------
+
+/// FortiGate framer — wraps the `fortigate::framing` `0x5050` codec behind
+/// [`TunnelFramer`]. The v2 payload is a raw IP packet, so decode yields
+/// [`FrameEvent::Data`] directly. FortiGate has no in-tunnel keepalive or
+/// disconnect frame (RESEARCH §6): `encode_keepalive` returns an empty buffer,
+/// which the forwarding loop treats as "no active liveness probe" (liveness then
+/// rests on TLS EOF detection), and `encode_shutdown` sends nothing.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FortinetTunnelFramer;
+
+impl TunnelFramer for FortinetTunnelFramer {
+    fn encode_data(&self, payload: &[u8]) -> Vec<u8> {
+        forti::encode_data(payload)
+    }
+
+    fn encode_data_append(&self, payload: &[u8], out: &mut Vec<u8>) {
+        forti::encode_data_append(payload, out);
+    }
+
+    fn encode_keepalive(&self) -> Vec<u8> {
+        // No FortiGate in-tunnel keepalive frame; opt out of active DPD.
+        Vec::new()
+    }
+
+    fn try_decode(&mut self, buf: &mut BytesMut) -> Result<Option<FrameEvent>, VpnError> {
+        Ok(forti::try_decode_forti(buf)?.map(FrameEvent::Data))
     }
 }
 
@@ -306,6 +339,44 @@ mod tests {
     fn slim_partial_frame_needs_more() {
         let mut f = SlimTunnelFramer;
         let mut buf = BytesMut::from(&[0x00, 0x00][..]); // partial header
+        assert_eq!(f.try_decode(&mut buf).unwrap(), None);
+    }
+
+    // --- FortiGate ---
+
+    #[test]
+    fn fortinet_data_round_trips_through_framer() {
+        let mut f = FortinetTunnelFramer;
+        let frame = f.encode_data(&[0x45, 0x00, 0x11]);
+        let mut buf = BytesMut::from(&frame[..]);
+        assert_eq!(
+            f.try_decode(&mut buf).unwrap(),
+            Some(FrameEvent::Data(vec![0x45, 0x00, 0x11]))
+        );
+    }
+
+    #[test]
+    fn fortinet_keepalive_is_empty_and_shutdown_is_none() {
+        let f = FortinetTunnelFramer;
+        assert!(f.encode_keepalive().is_empty());
+        assert_eq!(f.encode_shutdown(), None);
+    }
+
+    #[test]
+    fn fortinet_coalesced_batch_decodes_as_sequence() {
+        let mut f = FortinetTunnelFramer;
+        let mut batch = Vec::new();
+        f.encode_data_append(&[0x11, 0x22], &mut batch);
+        f.encode_data_append(&[0x33], &mut batch);
+        let mut buf = BytesMut::from(&batch[..]);
+        assert_eq!(
+            f.try_decode(&mut buf).unwrap(),
+            Some(FrameEvent::Data(vec![0x11, 0x22]))
+        );
+        assert_eq!(
+            f.try_decode(&mut buf).unwrap(),
+            Some(FrameEvent::Data(vec![0x33]))
+        );
         assert_eq!(f.try_decode(&mut buf).unwrap(), None);
     }
 

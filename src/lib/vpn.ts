@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type Protocol = "AnyConnect" | "Checkpoint";
+export type Protocol = "AnyConnect" | "Checkpoint" | "FortiGate";
 
 export interface Profile {
   id: number;

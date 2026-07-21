@@ -163,6 +163,7 @@ export function ProfileDialog({
                   <SelectContent>
                     <SelectItem value="AnyConnect">AnyConnect (Cisco)</SelectItem>
                     <SelectItem value="Checkpoint">Check Point SNX</SelectItem>
+                    <SelectItem value="FortiGate">FortiGate SSL VPN</SelectItem>
                   </SelectContent>
                 </Select>
               </Field>

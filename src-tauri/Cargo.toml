@@ -1,6 +1,6 @@
 [package]
 name = "yellow-vpn"
-version = "0.1.5"
+version = "0.2.0"
 description = "Yellow VPN"
 authors = ["Aaron King"]
 edition.workspace = true

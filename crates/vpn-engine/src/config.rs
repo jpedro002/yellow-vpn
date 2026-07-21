@@ -18,6 +18,8 @@ pub enum Protocol {
     AnyConnect,
     /// Check Point SNX (CCC + SLIM) (v0.2).
     Checkpoint,
+    /// FortiGate SSL VPN (v2 raw-IP over TLS) (v0.3).
+    FortiGate,
 }
 
 /// Fully-resolved, validated configuration used by the rest of the client.

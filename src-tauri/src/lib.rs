@@ -271,6 +271,7 @@ async fn vpn_connect(app: AppHandle, args: ConnectArgs) -> Result<(), String> {
         password: args.password.clone(),
         protocol: match c.protocol {
             vpn_ipc::WireProtocol::Checkpoint => 1,
+            vpn_ipc::WireProtocol::FortiGate => 2,
             vpn_ipc::WireProtocol::AnyConnect => 0,
         },
         insecure: c.insecure,

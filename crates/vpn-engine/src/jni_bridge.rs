@@ -163,6 +163,7 @@ pub extern "system" fn Java_app_yellowvpn_plugin_VpnBridge_runEngine(
         insecure: insecure != 0,
         protocol: match protocol {
             1 => Protocol::Checkpoint,
+            2 => Protocol::FortiGate,
             _ => Protocol::AnyConnect,
         },
     };

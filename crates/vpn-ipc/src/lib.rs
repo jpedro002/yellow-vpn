@@ -22,6 +22,7 @@ pub const SOCKET_PATH: &str = "/var/run/yellow-vpn/helper.sock";
 pub enum WireProtocol {
     AnyConnect,
     Checkpoint,
+    FortiGate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
