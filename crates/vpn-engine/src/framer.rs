@@ -156,8 +156,11 @@ impl TunnelFramer for SlimTunnelFramer {
 // ---------------------------------------------------------------------------
 
 /// FortiGate framer — wraps the `fortigate::framing` `0x5050` codec behind
-/// [`TunnelFramer`]. The v2 payload is a raw IP packet, so decode yields
-/// [`FrameEvent::Data`] directly. FortiGate has no in-tunnel keepalive or
+/// [`TunnelFramer`]. The v2 payload is a raw IP packet, decoded to
+/// [`FrameEvent::Data`]. A non-IP payload means the gateway is speaking the
+/// unimplemented v1/PPP wire protocol (same 0x5050 outer header): `try_decode`
+/// detects that by the payload's leading bytes and returns [`FrameEvent::Ignore`]
+/// (never feeding PPP bytes to the TUN). FortiGate has no in-tunnel keepalive or
 /// disconnect frame (RESEARCH §6): `encode_keepalive` returns an empty buffer,
 /// which the forwarding loop treats as "no active liveness probe" (liveness then
 /// rests on TLS EOF detection), and `encode_shutdown` sends nothing.
@@ -179,7 +182,38 @@ impl TunnelFramer for FortinetTunnelFramer {
     }
 
     fn try_decode(&mut self, buf: &mut BytesMut) -> Result<Option<FrameEvent>, VpnError> {
-        Ok(forti::try_decode_forti(buf)?.map(FrameEvent::Data))
+        let Some(payload) = forti::try_decode_forti(buf)? else {
+            return Ok(None);
+        };
+        // The v2 wire protocol carries a raw IP packet; v1 (legacy, by far the
+        // most common on real gateways) carries a PPP frame under the SAME 0x5050
+        // outer header. Both decode here, so the outer magic can't tell them apart
+        // — but the payload can: an IP packet begins with version nibble 4 or 6,
+        // while a PPP frame begins with the HDLC address/control 0xFF 0x03 (or a
+        // 0x7E flag / 0xC0 protocol byte). Classifying protects the TUN from being
+        // fed PPP negotiation bytes as if they were IP, and surfaces the wire
+        // protocol the gateway is actually speaking instead of failing silently.
+        match payload.first().map(|b| b >> 4) {
+            Some(4) | Some(6) => Ok(Some(FrameEvent::Data(payload))),
+            _ => {
+                // Not an IP packet -> almost certainly a v1/PPP control frame
+                // (LCP/IPCP). We have no PPP state machine, so we cannot answer;
+                // the gateway will keep re-sending its Configure-Request and the
+                // tunnel sits "negotiating" forever. Log loudly ONCE, then ignore
+                // so we neither corrupt the TUN nor spin the reconnect loop.
+                static WARN_ONCE: std::sync::Once = std::sync::Once::new();
+                WARN_ONCE.call_once(|| {
+                    tracing::error!(
+                        first_bytes = ?payload.iter().take(8).collect::<Vec<_>>(),
+                        "FortiGate tunnel sent a NON-IP frame — this gateway speaks the \
+                         v1/PPP wire protocol, which is not yet implemented (only v2 raw-IP \
+                         is). The tunnel will not carry traffic until PPP (HDLC+LCP+IPCP) \
+                         support is added."
+                    );
+                });
+                Ok(Some(FrameEvent::Ignore))
+            }
+        }
     }
 }
 
@@ -366,18 +400,40 @@ mod tests {
     fn fortinet_coalesced_batch_decodes_as_sequence() {
         let mut f = FortinetTunnelFramer;
         let mut batch = Vec::new();
-        f.encode_data_append(&[0x11, 0x22], &mut batch);
-        f.encode_data_append(&[0x33], &mut batch);
+        // IPv4-leading payloads (version nibble 4) so both classify as Data.
+        f.encode_data_append(&[0x45, 0x22], &mut batch);
+        f.encode_data_append(&[0x46], &mut batch);
         let mut buf = BytesMut::from(&batch[..]);
         assert_eq!(
             f.try_decode(&mut buf).unwrap(),
-            Some(FrameEvent::Data(vec![0x11, 0x22]))
+            Some(FrameEvent::Data(vec![0x45, 0x22]))
         );
         assert_eq!(
             f.try_decode(&mut buf).unwrap(),
-            Some(FrameEvent::Data(vec![0x33]))
+            Some(FrameEvent::Data(vec![0x46]))
         );
         assert_eq!(f.try_decode(&mut buf).unwrap(), None);
+    }
+
+    #[test]
+    fn fortinet_non_ip_payload_is_ignored_not_data() {
+        // A v1/PPP frame (HDLC 0xFF 0x03 ...) shares the 0x5050 outer header but
+        // is NOT an IP packet. It must not reach the TUN as Data.
+        let mut f = FortinetTunnelFramer;
+        let frame = f.encode_data(&[0xFF, 0x03, 0xC0, 0x21]); // PPP LCP over HDLC
+        let mut buf = BytesMut::from(&frame[..]);
+        assert_eq!(f.try_decode(&mut buf).unwrap(), Some(FrameEvent::Ignore));
+    }
+
+    #[test]
+    fn fortinet_ipv6_payload_is_data() {
+        let mut f = FortinetTunnelFramer;
+        let frame = f.encode_data(&[0x60, 0x00, 0x00]); // IPv6 version nibble
+        let mut buf = BytesMut::from(&frame[..]);
+        assert_eq!(
+            f.try_decode(&mut buf).unwrap(),
+            Some(FrameEvent::Data(vec![0x60, 0x00, 0x00]))
+        );
     }
 
     #[test]

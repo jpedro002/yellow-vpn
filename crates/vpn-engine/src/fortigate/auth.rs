@@ -102,9 +102,50 @@ pub fn parse_login_response(raw: &str) -> Result<String, VpnError> {
         }
     }
 
-    // 3. No usable cookie: rejected credentials or a 2FA challenge.
+    // 3. No usable cookie. Distinguish a 2FA/OTP challenge from a plain rejection:
+    //    a FortiGate second-factor prompt answers 200 with a body carrying
+    //    challenge params (tokeninfo/reqid/polid/grp/magic/portal/peer) but no
+    //    cookie. Naming which case it is makes the error actionable instead of a
+    //    vague "wrong credentials or 2FA".
+    let two_factor_markers = ["tokeninfo", "reqid=", "grp=", "magic="];
+    let looks_like_2fa = two_factor_markers.iter().any(|m| raw.contains(m));
+
+    // Diagnostic: log the status line + which 2FA markers were seen. The cookie
+    // value is the only secret in a login reply and it is absent on this path, so
+    // logging the status + marker names leaks nothing sensitive.
+    // Redact any cookie value before logging, then log a bounded slice of the
+    // whole response (headers + body). The body of a failed logincheck carries
+    // the reason (ret=/redir=/realm/portal) and no secret, so this is the fastest
+    // way to see why a credential that works in FortiClient is refused here.
+    let redacted = {
+        let mut r = raw.to_string();
+        while let Some(i) = r.find("SVPNCOOKIE=") {
+            let vstart = i + "SVPNCOOKIE=".len();
+            let vend = r[vstart..]
+                .find([';', '\r', '\n'])
+                .map(|e| vstart + e)
+                .unwrap_or(r.len());
+            r.replace_range(vstart..vend, "<redacted>");
+        }
+        r.chars().take(1024).collect::<String>()
+    };
+    tracing::warn!(
+        status = %status,
+        looks_like_2fa,
+        markers = ?two_factor_markers.iter().filter(|m| raw.contains(**m)).collect::<Vec<_>>(),
+        response = %redacted,
+        "FortiGate login returned no SVPNCOOKIE"
+    );
+
+    if looks_like_2fa {
+        return Err(VpnError::AuthFailed(
+            "FortiGate requires two-factor/OTP — the server sent a token challenge, \
+             which this client does not yet answer (2FA is not implemented)"
+                .into(),
+        ));
+    }
     Err(VpnError::AuthFailed(
-        "no SVPNCOOKIE in login response (wrong credentials or two-factor required)".into(),
+        "FortiGate rejected the login (no SVPNCOOKIE) — check username/password/realm".into(),
     ))
 }
 
