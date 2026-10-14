@@ -4819,7 +4819,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vpn-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "nix 0.29.0",
  "tokio",
@@ -4830,7 +4830,7 @@ dependencies = [
 
 [[package]]
 name = "vpn-engine"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -4853,7 +4853,7 @@ dependencies = [
 
 [[package]]
 name = "vpn-helper"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "nix 0.29.0",
  "serde_json",
@@ -4867,7 +4867,7 @@ dependencies = [
 
 [[package]]
 name = "vpn-ipc"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -5615,7 +5615,7 @@ dependencies = [
 
 [[package]]
 name = "yellow-vpn"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "reqwest 0.12.28",

@@ -20,6 +20,7 @@ class ConnectArgs {
     var port: Int = 443
     var username: String = ""
     var password: String = ""
+    var newPassword: String = ""
     var protocol: Int = 0 // 0 = AnyConnect, 1 = Checkpoint
     var insecure: Boolean = false
     var certSha256: String = ""
@@ -104,10 +105,21 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
         invoke.resolve(o)
     }
 
+    /** Password-rotation notices for the UI poll. Each field is consume-once, so a
+     *  prompt is delivered a single time. */
+    @Command
+    fun notice(invoke: Invoke) {
+        val o = JSObject()
+        o.put("passwordExpired", VpnController.takePasswordExpired())
+        o.put("passwordChanged", VpnController.takePasswordChanged())
+        invoke.resolve(o)
+    }
+
     private fun startTunnel(a: ConnectArgs) {
         VpnController.start(
             activity, a.host, a.port, a.username, a.password,
             a.protocol, a.insecure, a.certSha256, a.address, a.mtu,
+            newPass = a.newPassword,
         )
     }
 

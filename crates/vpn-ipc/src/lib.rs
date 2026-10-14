@@ -43,7 +43,14 @@ pub struct WireConfig {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClientCommand {
-    Connect { config: WireConfig, password: String },
+    Connect {
+        config: WireConfig,
+        password: String,
+        /// Replacement password to submit if the gateway reports `password` as
+        /// expired. `serde(default)` so an older GUI still talks to this helper.
+        #[serde(default)]
+        new_password: Option<String>,
+    },
     Disconnect,
     Shutdown,
 }
@@ -60,6 +67,12 @@ pub enum WireState {
 pub enum ClientMessage {
     State(WireState),
     Error { message: String, permanent: bool },
+    /// The gateway demands a new password; the tunnel is down until the GUI
+    /// reconnects with `new_password` set. `prompt` is the gateway's own text.
+    PasswordExpired { prompt: String },
+    /// The gateway accepted the `new_password` from the last Connect; the GUI
+    /// should store it as the profile's password.
+    PasswordChanged,
     Bye,
 }
 
@@ -79,11 +92,24 @@ mod tests {
             verbose: true,
             realm: Some("corp".into()),
         };
-        let cmd = ClientCommand::Connect { config: cfg, password: "s3cret".into() };
+        let cmd = ClientCommand::Connect {
+            config: cfg,
+            password: "s3cret".into(),
+            new_password: Some("n3w".into()),
+        };
         let line = serde_json::to_string(&cmd).unwrap();
         let back: ClientCommand = serde_json::from_str(&line).unwrap();
         assert_eq!(cmd, back);
         assert!(!line.contains('\n'), "serialized command must be single-line");
+    }
+
+    #[test]
+    fn connect_without_new_password_still_deserializes() {
+        let line = r#"{"Connect":{"config":{"host":"h","port":443,"username":"u","protocol":"Checkpoint","cert_sha256":null,"insecure":false,"verbose":false},"password":"p"}}"#;
+        match serde_json::from_str::<ClientCommand>(line).unwrap() {
+            ClientCommand::Connect { new_password, .. } => assert_eq!(new_password, None),
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]
@@ -92,6 +118,8 @@ mod tests {
             ClientMessage::State(WireState::Connecting),
             ClientMessage::State(WireState::Reconnecting { delay_secs: 2.5 }),
             ClientMessage::Error { message: "auth failed".into(), permanent: true },
+            ClientMessage::PasswordExpired { prompt: "Enter new password".into() },
+            ClientMessage::PasswordChanged,
             ClientMessage::Bye,
         ] {
             let line = serde_json::to_string(&m).unwrap();

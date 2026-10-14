@@ -85,10 +85,78 @@ pub fn build_userpass_request(username: &str, password: &str, id: u32) -> String
     .to_wire()
 }
 
+/// Build the `MultiChallange` request that answers a gateway challenge — the
+/// expired-password flow's "Enter new password" / "Retype password" rounds.
+///
+/// The type string is Check Point's own misspelling (no second "e"); the
+/// correctly-spelled `MultiChallenge` is rejected with `return_code 502`.
+/// `user_input` is obfuscated like every other secret. `session_id` is the one
+/// the gateway handed back with the challenge, not a secret.
+pub fn build_multichallange_request(session_id: &str, user_input: &str, id: u32) -> String {
+    let header = CccValue::Node {
+        name: None,
+        fields: vec![
+            ("id".into(), CccValue::Atom(id.to_string())),
+            ("type".into(), CccValue::Atom("MultiChallange".into())),
+            ("session_id".into(), CccValue::Atom(session_id.to_string())),
+        ],
+    };
+    let data = CccValue::Node {
+        name: None,
+        fields: vec![
+            ("client_type".into(), CccValue::Atom("TRAC".into())),
+            ("auth_session_id".into(), CccValue::Atom(session_id.to_string())),
+            ("user_input".into(), CccValue::Atom(cipher::encode(user_input))),
+        ],
+    };
+    CccValue::Node {
+        name: Some("CCCclientRequest".into()),
+        fields: vec![
+            ("RequestHeader".into(), header),
+            ("RequestData".into(), data),
+        ],
+    }
+    .to_wire()
+}
+
+/// What a well-formed `return_code 600` reply actually is: a finished login, or
+/// the gateway asking one more question (`auth_state (new_challenge)`).
+#[derive(Debug)]
+pub enum CccAuthReply {
+    Session(CccSession),
+    Challenge {
+        session_id: String,
+        /// Human-readable prompt, deobfuscated (e.g. "Enter new password").
+        prompt: String,
+        /// Machine id, deobfuscated (e.g. `CPSC_INTERNAL_PASSWORD_UPDATE`).
+        prompt_id: String,
+    },
+}
+
+/// Deobfuscate a challenge field. Falls back to the raw text so a gateway that
+/// sends the prompt in the clear still yields something readable.
+fn decode_challenge_text(raw: &str) -> String {
+    cipher::decode(raw)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_else(|_| raw.to_string())
+}
+
+/// True when the challenge is one of the password-change rounds (as opposed to,
+/// say, an OTP prompt this client cannot answer).
+fn is_password_challenge(prompt_id: &str, prompt: &str) -> bool {
+    if prompt_id.is_empty() {
+        return prompt.to_ascii_lowercase().contains("password");
+    }
+    prompt_id.to_ascii_uppercase().contains("PASSWORD")
+}
+
 /// Parse a CCC `(CCCserverResponse ...)` body into a [`CccSession`] (CP-AUTH-02).
 ///
 /// Mapping (D-05):
 /// - `return_code == 600` + a present `active_key` -> `Ok(CccSession)`.
+/// - `return_code == 600` + `auth_state (new_challenge)` -> `VpnError::PasswordExpired`
+///   for a password-change prompt, `AuthFailed` for any other challenge. Use
+///   [`parse_auth_reply`] to answer it instead.
 /// - `return_code == 600` but no `active_key` -> `VpnError::Protocol` (unusable).
 /// - any well-formed non-600 -> PERMANENT `VpnError::AuthFailed` (credential/
 ///   authorization rejection; reconnecting cannot fix it).
@@ -97,6 +165,25 @@ pub fn build_userpass_request(username: &str, password: &str, id: u32) -> String
 ///
 /// The body, `active_key`, and `session_id` are never logged.
 pub fn parse_ccc_response(body: &str) -> Result<CccSession, VpnError> {
+    match parse_auth_reply(body)? {
+        CccAuthReply::Session(s) => Ok(s),
+        CccAuthReply::Challenge { prompt, prompt_id, .. } => {
+            Err(challenge_error(&prompt_id, prompt))
+        }
+    }
+}
+
+fn challenge_error(prompt_id: &str, prompt: String) -> VpnError {
+    if is_password_challenge(prompt_id, &prompt) {
+        VpnError::PasswordExpired { prompt }
+    } else {
+        VpnError::AuthFailed("server requested an unsupported authentication challenge".into())
+    }
+}
+
+/// Like [`parse_ccc_response`], but a `new_challenge` reply is returned to the
+/// caller as [`CccAuthReply::Challenge`] so it can be answered.
+pub fn parse_auth_reply(body: &str) -> Result<CccAuthReply, VpnError> {
     // Untrusted server body: ccc::parse is bounded + panic-free; any failure
     // bubbles up as VpnError::Protocol.
     let doc = ccc::parse(body)?;
@@ -132,6 +219,22 @@ pub fn parse_ccc_response(body: &str) -> Result<CccSession, VpnError> {
         .unwrap_or("")
         .to_string();
 
+    // A 600 that is not a login but a follow-up question. Challenge fields are
+    // looked up in ResponseData first, then the header, because the gateway is
+    // not consistent about where it puts them.
+    let challenge_field = |name: &str| {
+        rdata
+            .and_then(|d| d.get(name))
+            .or_else(|| header.and_then(|h| h.get(name)))
+            .and_then(|v| v.as_atom())
+    };
+    if challenge_field("auth_state") == Some("new_challenge") {
+        let prompt = challenge_field("prompt").map(decode_challenge_text).unwrap_or_default();
+        let prompt_id =
+            challenge_field("prompt_id").map(decode_challenge_text).unwrap_or_default();
+        return Ok(CccAuthReply::Challenge { session_id, prompt, prompt_id });
+    }
+
     // active_key: required for a usable 600. Kept as the raw OBFUSCATED hex;
     // deobfuscate lazily via CccSession::active_key_deobfuscated.
     let active_key = rdata
@@ -149,7 +252,7 @@ pub fn parse_ccc_response(body: &str) -> Result<CccSession, VpnError> {
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or(DEFAULT_TCPT_PORT);
 
-    Ok(CccSession::new(session_id, active_key, tcpt_port))
+    Ok(CccAuthReply::Session(CccSession::new(session_id, active_key, tcpt_port)))
 }
 
 /// Build the CCC `Signout` request that releases a session server-side.
@@ -260,17 +363,127 @@ pub async fn authenticate_checkpoint(
     username: &str,
     password: &str,
 ) -> Result<CccSession, VpnError> {
+    authenticate_checkpoint_with_change(host, port, trust, username, password, None)
+        .await
+        .map(|(session, _changed)| session)
+}
+
+/// Most `MultiChallange` rounds we will answer. The expired-password flow has
+/// two (new password, retype); the cap only stops a misbehaving gateway from
+/// looping us forever.
+const MAX_CHALLENGE_ROUNDS: u32 = 4;
+
+/// One HTTPS round trip to `/clients/`. Every CCC round gets its own connection
+/// (`Connection: close`); state is carried by `session_id`, not the socket.
+async fn ccc_exchange(
+    host: &str,
+    port: u16,
+    trust: &CertTrust,
+    body: &str,
+) -> Result<String, VpnError> {
     use tokio::io::AsyncWriteExt;
 
     let mut tls = connect_tls(host, port, trust).await?; // reused v0.1 TLS + CertTrust
-    let request = http_post_clients(host, &build_userpass_request(username, password, 1));
-    tls.write_all(request.as_bytes()).await?;
+    tls.write_all(http_post_clients(host, body).as_bytes()).await?;
     tls.flush().await?;
+    read_http_body(&mut tls).await
+}
 
-    let body = read_http_body(&mut tls).await?;
-    let session = parse_ccc_response(&body)?;
-    tracing::info!(host = %host, "Check Point CCC authentication succeeded");
-    Ok(session)
+/// What to do with one parsed reply — split out of the I/O loop so the decision
+/// table is unit-testable.
+enum Step {
+    Done(CccSession),
+    /// Answer the challenge on this session with the new password.
+    Answer { session_id: String },
+}
+
+fn plan_step(
+    reply: CccAuthReply,
+    has_new_password: bool,
+    rounds_done: u32,
+) -> Result<Step, VpnError> {
+    match reply {
+        CccAuthReply::Session(s) => Ok(Step::Done(s)),
+        CccAuthReply::Challenge { session_id, prompt, prompt_id } => {
+            if !is_password_challenge(&prompt_id, &prompt) {
+                return Err(challenge_error(&prompt_id, prompt));
+            }
+            if !has_new_password {
+                return Err(VpnError::PasswordExpired { prompt });
+            }
+            if rounds_done >= MAX_CHALLENGE_ROUNDS {
+                return Err(VpnError::Protocol("too many password-change rounds".into()));
+            }
+            Ok(Step::Answer { session_id })
+        }
+    }
+}
+
+/// [`authenticate_checkpoint`] that can also rotate an expired password.
+///
+/// If the gateway answers the login with a password-change challenge and
+/// `new_password` is `Some`, it is submitted for each round (new password, then
+/// retype) until the gateway issues the `active_key`. With `None` the challenge
+/// surfaces as [`VpnError::PasswordExpired`] so the caller can ask the user.
+///
+/// Returns the session and whether the password was actually changed — the
+/// caller must use `new_password` for every later login when it was.
+/// Neither password is ever logged.
+pub async fn authenticate_checkpoint_with_change(
+    host: &str,
+    port: u16,
+    trust: &CertTrust,
+    username: &str,
+    password: &str,
+    new_password: Option<&str>,
+) -> Result<(CccSession, bool), VpnError> {
+    let body = ccc_exchange(host, port, trust, &build_userpass_request(username, password, 1))
+        .await?;
+    let mut reply = parse_auth_reply(&body)?;
+    let mut rounds: u32 = 0;
+
+    loop {
+        let pending_session = match &reply {
+            CccAuthReply::Challenge { session_id, .. } if !session_id.is_empty() => {
+                Some(session_id.clone())
+            }
+            _ => None,
+        };
+        let step = match plan_step(reply, new_password.is_some(), rounds) {
+            Ok(step) => step,
+            Err(e) => {
+                // The challenge opened a half-authenticated session on the gateway;
+                // release it rather than leave it to time out. Best-effort.
+                if let Some(sid) = pending_session {
+                    if let Err(se) = signout_checkpoint(host, port, trust, &sid).await {
+                        tracing::debug!(error = %se, "signout of pending challenge session failed");
+                    }
+                }
+                return Err(e);
+            }
+        };
+        match step {
+            Step::Done(session) => {
+                tracing::info!(host = %host, changed = rounds > 0, "Check Point CCC authentication succeeded");
+                return Ok((session, rounds > 0));
+            }
+            Step::Answer { session_id } => {
+                rounds += 1;
+                let request = build_multichallange_request(
+                    &session_id,
+                    new_password.unwrap_or_default(),
+                    rounds + 1,
+                );
+                let body = ccc_exchange(host, port, trust, &request).await?;
+                reply = parse_auth_reply(&body).map_err(|e| match e {
+                    VpnError::AuthFailed(m) => {
+                        VpnError::AuthFailed(format!("password change rejected: {m}"))
+                    }
+                    other => other,
+                })?;
+            }
+        }
+    }
 }
 
 /// Release the CCC session on the gateway (best-effort counterpart to
@@ -412,6 +625,103 @@ mod tests {
             parse_ccc_response(NO_RETURN_CODE),
             Err(VpnError::Protocol(_))
         ));
+    }
+
+    fn challenge_body(prompt: &str, prompt_id: &str) -> String {
+        format!(
+            "(CCCserverResponse :ResponseHeader ( :id (1) :type (UserPass) :session_id (NEWSESS) \
+             :return_code (600) ) :ResponseData ( :authn_status (continue) :auth_state (new_challenge) \
+             :prompt ({}) :prompt_id ({}) ) )",
+            cipher::encode(prompt),
+            cipher::encode(prompt_id)
+        )
+    }
+
+    #[test]
+    fn multichallange_request_uses_the_misspelled_type() {
+        let req = build_multichallange_request("NEWSESS", "n3wpass", 2);
+        assert!(req.contains(":type (MultiChallange)"), "req: {req}");
+        assert!(!req.contains("MultiChallenge"), "correct spelling is rejected by the gateway");
+        assert!(req.contains(":auth_session_id (NEWSESS)"), "req: {req}");
+        assert!(req.contains(":client_type (TRAC)"), "req: {req}");
+        assert!(req.contains(&format!(":user_input ({})", cipher::encode("n3wpass"))));
+        assert!(!req.contains("n3wpass"), "plaintext new password leaked");
+        assert_eq!(ccc::parse(&req).unwrap().name(), Some("CCCclientRequest"));
+    }
+
+    #[test]
+    fn parse_auth_reply_returns_the_challenge() {
+        let body = challenge_body("Enter new password", "CPSC_INTERNAL_PASSWORD_UPDATE");
+        match parse_auth_reply(&body).unwrap() {
+            CccAuthReply::Challenge { session_id, prompt, prompt_id } => {
+                assert_eq!(session_id, "NEWSESS");
+                assert_eq!(prompt, "Enter new password");
+                assert_eq!(prompt_id, "CPSC_INTERNAL_PASSWORD_UPDATE");
+            }
+            other => panic!("expected a challenge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_auth_reply_still_returns_a_session() {
+        assert!(matches!(parse_auth_reply(SUCCESS).unwrap(), CccAuthReply::Session(_)));
+    }
+
+    #[test]
+    fn parse_ccc_response_maps_password_challenge_to_expired() {
+        let body = challenge_body("Enter new password", "CPSC_INTERNAL_PASSWORD_UPDATE");
+        match parse_ccc_response(&body).unwrap_err() {
+            VpnError::PasswordExpired { prompt } => assert_eq!(prompt, "Enter new password"),
+            other => panic!("expected PasswordExpired, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_ccc_response_rejects_non_password_challenge() {
+        let body = challenge_body("Enter the code", "CPSC_INTERNAL_OTP");
+        assert!(matches!(parse_ccc_response(&body), Err(VpnError::AuthFailed(_))));
+    }
+
+    fn challenge(prompt_id: &str) -> CccAuthReply {
+        CccAuthReply::Challenge {
+            session_id: "S".into(),
+            prompt: "Enter new password".into(),
+            prompt_id: prompt_id.into(),
+        }
+    }
+
+    #[test]
+    fn plan_without_new_password_reports_expiry() {
+        let r = plan_step(challenge("CPSC_INTERNAL_PASSWORD_UPDATE"), false, 0);
+        assert!(matches!(r, Err(VpnError::PasswordExpired { .. })));
+    }
+
+    #[test]
+    fn plan_answers_both_password_rounds() {
+        for id in ["CPSC_INTERNAL_PASSWORD_UPDATE", "CPSC_INTERNAL_RETYPE_PASSWORD"] {
+            assert!(matches!(
+                plan_step(challenge(id), true, 0),
+                Ok(Step::Answer { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn plan_stops_after_max_rounds() {
+        let r = plan_step(challenge("CPSC_INTERNAL_PASSWORD_UPDATE"), true, MAX_CHALLENGE_ROUNDS);
+        assert!(matches!(r, Err(VpnError::Protocol(_))));
+    }
+
+    #[test]
+    fn plan_never_answers_an_unknown_challenge_with_the_password() {
+        let r = plan_step(challenge("CPSC_INTERNAL_OTP"), true, 0);
+        assert!(matches!(r, Err(VpnError::AuthFailed(_))));
+    }
+
+    #[test]
+    fn plan_session_is_done() {
+        let s = CccAuthReply::Session(CccSession::new("s".into(), "36203a333d372a59".into(), 443));
+        assert!(matches!(plan_step(s, false, 2), Ok(Step::Done(_))));
     }
 
     #[test]

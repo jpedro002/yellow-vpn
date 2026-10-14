@@ -26,7 +26,17 @@ export type WireState =
 export type ClientMessage =
   | { State: WireState }
   | { Error: { message: string; permanent: boolean } }
+  | { PasswordExpired: { prompt: string } }
+  | "PasswordChanged"
   | "Bye";
+
+/** Password-rotation notices polled on mobile (desktop gets them as events). */
+export interface VpnNotice {
+  passwordExpired: string | null;
+  passwordChanged: boolean;
+}
+
+export const vpnNotice = () => invoke<VpnNotice>("vpn_notice");
 
 export function stateLabel(s: WireState): string {
   if (typeof s === "string") return s;
@@ -35,7 +45,8 @@ export function stateLabel(s: WireState): string {
   return "Unknown";
 }
 
-export async function connectProfile(p: Profile): Promise<void> {
+/** `newPassword` answers a PasswordExpired: the gateway rotates it during login. */
+export async function connectProfile(p: Profile, newPassword?: string): Promise<void> {
   await invoke("vpn_connect", {
     args: {
       config: {
@@ -50,6 +61,7 @@ export async function connectProfile(p: Profile): Promise<void> {
         realm: p.realm && p.realm.trim() ? p.realm.trim() : null,
       },
       password: p.password,
+      newPassword: newPassword ?? null,
       profileName: p.name,
     },
   });

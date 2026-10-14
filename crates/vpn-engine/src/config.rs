@@ -40,6 +40,9 @@ pub struct Config {
     /// login that omits theirs; empty means the default realm. Unused by the
     /// AnyConnect and Check Point paths.
     pub realm: String,
+    /// Replacement password to submit if the gateway reports the current one as
+    /// expired (Check Point only). `None` surfaces `VpnError::PasswordExpired`.
+    pub new_password: Option<String>,
 }
 
 impl Config {
@@ -56,6 +59,7 @@ impl Config {
             insecure: false,
             protocol: Protocol::default(),
             realm: String::new(),
+            new_password: None,
         }
     }
 }

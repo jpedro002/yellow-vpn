@@ -56,6 +56,11 @@ PASSWORD (in order of precedence):
         password = ...      in the profile file
         (otherwise the CLI prompts, with echo disabled)
 
+EXPIRED PASSWORD (check point only):
+    If the gateway reports the password as expired, the CLI asks for a new one
+    (twice, or $YELLOW_VPN_NEW_PASSWORD) and changes it during login. The old
+    password stops working: update any stored copy yourself.
+
 TLS OPTIONS:
         --servercert SHA256 Pin the server certificate by SHA-256 fingerprint.
                             Accepts `sha256:AA:BB:...` or bare hex.
@@ -461,9 +466,28 @@ async fn probe_checkpoint(
     use vpn_engine::checkpoint::{auth as cp_auth, session as cp_session};
 
     println!("== 1. CCC authenticate ==");
-    let ccc = cp_auth::authenticate_checkpoint(host, port, trust, username, password)
-        .await
-        .map_err(|e| e.to_string())?;
+    let first =
+        cp_auth::authenticate_checkpoint_with_change(host, port, trust, username, password, None)
+            .await;
+    let (ccc, changed) = match first {
+        Err(vpn_engine::VpnError::PasswordExpired { prompt }) => {
+            let new_password = resolve_new_password(&prompt)?;
+            cp_auth::authenticate_checkpoint_with_change(
+                host,
+                port,
+                trust,
+                username,
+                password,
+                Some(&new_password),
+            )
+            .await
+            .map_err(|e| e.to_string())?
+        }
+        other => other.map_err(|e| e.to_string())?,
+    };
+    if changed {
+        println!("   password CHANGED on the gateway — the old one no longer works");
+    }
     let cookie = ccc.active_key_deobfuscated().map_err(|e| e.to_string())?;
     println!("   session_id : {:?}", ccc.session_id);
     println!("   active_key : obtained ({} chars, redacted)", cookie.len());
@@ -551,7 +575,7 @@ fn cmd_connect(args: &[String]) -> Result<(), String> {
 
     require_privileges()?;
 
-    let config = Config {
+    let mut config = Config {
         host,
         port,
         username,
@@ -561,6 +585,7 @@ fn cmd_connect(args: &[String]) -> Result<(), String> {
         insecure,
         protocol,
         realm: settings.realm.unwrap_or_default(),
+        new_password: None,
     };
 
     eprintln!(
@@ -572,8 +597,17 @@ fn cmd_connect(args: &[String]) -> Result<(), String> {
     );
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("tokio runtime: {e}"))?;
-    rt.block_on(vpn_engine::run_client(&config, &password))
-        .map_err(|e| e.to_string())
+    match rt.block_on(vpn_engine::run_client(&config, &password)) {
+        // The gateway wants a new password before it will log us in: ask for one and
+        // go round once more. The engine rotates it during login and uses it for any
+        // later reconnect itself.
+        Err(vpn_engine::VpnError::PasswordExpired { prompt }) => {
+            config.new_password = Some(resolve_new_password(&prompt)?);
+            rt.block_on(vpn_engine::run_client(&config, &password))
+                .map_err(|e| e.to_string())
+        }
+        other => other.map_err(|e| e.to_string()),
+    }
 }
 
 fn protocol_name(p: Protocol) -> &'static str {
@@ -682,6 +716,32 @@ fn resolve_password(s: &Settings, host: &str, user: &str) -> Result<String, Stri
         }
     }
     prompt_password(&format!("Password for {user}@{host}: "))
+}
+
+/// Get a replacement password after the gateway reported the current one as
+/// expired: `$YELLOW_VPN_NEW_PASSWORD`, else two prompts that must agree.
+///
+/// Rotating changes the password on the gateway, so say so before asking — the CLI
+/// cannot rewrite a stored copy (profile file, env var) and the old one stops working.
+fn resolve_new_password(gateway_prompt: &str) -> Result<String, String> {
+    // The text comes from the gateway; drop control characters before echoing it.
+    let shown: String = gateway_prompt.chars().filter(|c| !c.is_control()).collect();
+    eprintln!("yellow-vpn: the gateway says: {shown}");
+    eprintln!(
+        "yellow-vpn: this will CHANGE your password on the gateway. Update any stored \
+         copy (profile file, $YELLOW_VPN_PASSWORD) afterwards."
+    );
+    if let Ok(p) = std::env::var("YELLOW_VPN_NEW_PASSWORD") {
+        if !p.is_empty() {
+            return Ok(p);
+        }
+    }
+    let first = prompt_password("New password: ")?;
+    let second = prompt_password("Retype new password: ")?;
+    if first != second {
+        return Err("the two new passwords do not match".into());
+    }
+    Ok(first)
 }
 
 /// Prompt on the terminal with echo disabled.

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Reveal, useReducedMotion } from "@/lib/motion";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
@@ -12,6 +12,7 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { StatusHero } from "@/components/StatusHero";
 import { ProfileList } from "@/components/ProfileList";
 import { SetupGate } from "@/components/SetupGate";
+import { PasswordChangeDialog } from "@/components/PasswordChangeDialog";
 import {
   Profile,
   listProfiles,
@@ -31,10 +32,35 @@ function tone(raw: ReturnType<typeof useVpnState>["raw"]) {
 }
 
 export default function App() {
-  const { raw } = useVpnState();
-  const setup = useWintun();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [selected, setSelected] = useState<Profile | null>(null);
+  // Set while the gateway is asking for a replacement password. Holds the profile
+  // it applies to so a selection change mid-dialog cannot retarget the rotation.
+  const [expired, setExpired] = useState<{ prompt: string; profile: Profile } | null>(null);
+  // The rotation in flight, kept until the gateway confirms it so the new password
+  // is saved to the profile only once it has actually been accepted.
+  const rotation = useRef<{ profile: Profile; newPassword: string } | null>(null);
+  const { raw } = useVpnState({
+    onPasswordExpired: (prompt) => {
+      setPending(false);
+      if (selected) setExpired({ prompt, profile: selected });
+    },
+    onPasswordChanged: () => {
+      const r = rotation.current;
+      rotation.current = null;
+      if (!r) return;
+      const { id, ...rest } = r.profile;
+      updateProfile(id, { ...rest, password: r.newPassword })
+        .then(() => {
+          toast.success("Password updated");
+          return refresh();
+        })
+        .catch((e) =>
+          toast.error(`Password changed on the gateway but not saved locally: ${String(e)}`),
+        );
+    },
+  });
+  const setup = useWintun();
   const reduce = useReducedMotion();
   const isMobile = useIsMobile();
   // App version read from tauri.conf.json at runtime (single source of truth),
@@ -63,11 +89,11 @@ export default function App() {
     refresh();
   }, []);
 
-  async function handleConnect() {
-    if (!selected) return;
+  async function handleConnect(profile: Profile | null = selected, newPassword?: string) {
+    if (!profile) return;
     setPending(true);
     try {
-      await connectProfile(selected);
+      await connectProfile(profile, newPassword);
     } catch (e) {
       const msg = String(e);
       toast.error(
@@ -92,6 +118,20 @@ export default function App() {
       }`}
     >
       <Toaster theme="dark" richColors position="bottom-right" />
+
+      <PasswordChangeDialog
+        open={expired !== null}
+        profileName={expired?.profile.name ?? ""}
+        prompt={expired?.prompt ?? ""}
+        currentPassword={expired?.profile.password ?? ""}
+        onCancel={() => setExpired(null)}
+        onSubmit={(newPassword) => {
+          if (!expired) return;
+          rotation.current = { profile: expired.profile, newPassword };
+          setExpired(null);
+          handleConnect(expired.profile, newPassword);
+        }}
+      />
 
       {/* Ambient atmosphere */}
       <div className="pointer-events-none absolute inset-0">
@@ -172,7 +212,7 @@ export default function App() {
                 raw={shownRaw}
                 active={selected}
                 canConnect={!!selected}
-                onConnect={handleConnect}
+                onConnect={() => handleConnect()}
                 onDisconnect={() => {
                   setPending(false);
                   disconnect();

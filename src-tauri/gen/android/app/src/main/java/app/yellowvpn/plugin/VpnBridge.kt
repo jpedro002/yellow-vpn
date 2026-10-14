@@ -1,7 +1,8 @@
 package app.yellowvpn.plugin
 
 /** State callback invoked by the Rust engine over JNI. `state` is one of
- *  "connecting" / "established" / "reconnecting" / "disconnected" / "error:<msg>". */
+ *  "connecting" / "established" / "reconnecting" / "disconnected" / "error:<msg>" /
+ *  "password_expired:<prompt>" / "password_changed". */
 interface StateCallback {
     fun onState(state: String)
 }
@@ -39,6 +40,7 @@ object VpnBridge {
         port: Int,
         user: String,
         pass: String,
+        newPass: String, // replacement for an expired password, empty for none
         protocol: Int, // 0 = AnyConnect, 1 = Checkpoint
         insecure: Boolean,
         certSha256: String, // hex SHA-256 fingerprint, empty for none

@@ -41,6 +41,13 @@ pub enum ClientEvent {
     Reconnecting { delay_secs: f64 },
     Disconnected,
     PermanentError(String),
+    /// The gateway wants a new password before it will log the user in. Terminal
+    /// like `PermanentError`, but the UI can answer it and reconnect.
+    PasswordExpired(String),
+    /// The gateway accepted the replacement password. Emitted as soon as the
+    /// rotation succeeds — before the tunnel is up — so the UI can persist it even
+    /// if a later step fails.
+    PasswordChanged,
 }
 
 const BASE_DELAY_MS: u64 = 1_000; // base 1s (D-04)
@@ -101,9 +108,14 @@ fn cert_trust(config: &Config) -> tunnel::CertTrust {
 /// the shared TUN/routing/forwarding pipeline; only the protocol layer (auth + session +
 /// framer) differs. `established` is set to true the instant the tunnel reaches the forwarding
 /// loop, so run_client can reset the backoff counter when a long-lived session later drops.
+///
+/// `password` and `new_password` are `&mut` because a Check Point password rotation changes
+/// which password later reconnects must use: once the gateway accepted `new_password`, the old
+/// one is dead and `password` is overwritten with it.
 async fn connect(
     config: &Config,
-    password: &str,
+    password: &mut String,
+    new_password: &mut Option<String>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     established: &mut bool,
     events: &tokio::sync::mpsc::Sender<ClientEvent>,
@@ -113,7 +125,8 @@ async fn connect(
             connect_anyconnect(config, password, shutdown_rx, established, events).await
         }
         Protocol::Checkpoint => {
-            connect_checkpoint(config, password, shutdown_rx, established, events).await
+            connect_checkpoint(config, password, new_password, shutdown_rx, established, events)
+                .await
         }
         Protocol::FortiGate => {
             connect_fortigate(config, password, shutdown_rx, established, events).await
@@ -217,7 +230,8 @@ async fn connect_anyconnect(
 /// by the deobfuscated active_key carried as the client_hello cookie (RESEARCH §1).
 async fn connect_checkpoint(
     config: &Config,
-    password: &str,
+    password: &mut String,
+    new_password: &mut Option<String>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     established: &mut bool,
     events: &tokio::sync::mpsc::Sender<ClientEvent>,
@@ -226,14 +240,24 @@ async fn connect_checkpoint(
     let trust = cert_trust(config);
 
     // 1. CCC UserPass auth over its own HTTPS socket -> session (session_id, active_key, tcpt_port).
-    let ccc = cp_auth::authenticate_checkpoint(
+    //    If the password is expired and a replacement was supplied, this also rotates it.
+    let (ccc, changed) = cp_auth::authenticate_checkpoint_with_change(
         &config.host,
         config.port,
         &trust,
         &config.username,
         password,
+        new_password.as_deref(),
     )
     .await?;
+    if changed {
+        // The old password no longer works; every reconnect must use the new one.
+        if let Some(np) = new_password.take() {
+            *password = np;
+        }
+        tracing::info!("Check Point password rotated");
+        let _ = events.send(ClientEvent::PasswordChanged).await;
+    }
     let cookie = ccc.active_key_deobfuscated()?;
     let session_id = ccc.session_id.clone();
 
@@ -401,6 +425,10 @@ pub async fn run_client_supervised(
     events: tokio::sync::mpsc::Sender<ClientEvent>,
 ) -> Result<(), VpnError> {
     let mut attempt: u32 = 0;
+    // Owned copies: a Check Point password rotation replaces them mid-run so a later
+    // reconnect logs in with the password that is actually valid now.
+    let mut password = password.to_owned();
+    let mut new_password = config.new_password.clone();
     loop {
         // Honor an already-set shutdown before doing any network work.
         if *shutdown_rx.borrow() {
@@ -410,7 +438,16 @@ pub async fn run_client_supervised(
         let mut established = false;
         let _ = events.send(ClientEvent::Connecting).await;
         let started = std::time::Instant::now();
-        match connect(config, password, shutdown_rx.clone(), &mut established, &events).await {
+        match connect(
+            config,
+            &mut password,
+            &mut new_password,
+            shutdown_rx.clone(),
+            &mut established,
+            &events,
+        )
+        .await
+        {
             // Clean user shutdown -> terminal, do NOT reconnect (Phase 7 contract, criterion 1).
             Ok(()) => {
                 let _ = events.send(ClientEvent::Disconnected).await;
@@ -421,7 +458,13 @@ pub async fn run_client_supervised(
             // (criterion 3). No backoff, no retry.
             Err(e) if e.is_permanent() => {
                 tracing::error!(error = %e, "permanent error — not reconnecting");
-                let _ = events.send(ClientEvent::PermanentError(e.to_string())).await;
+                let event = match &e {
+                    VpnError::PasswordExpired { prompt } => {
+                        ClientEvent::PasswordExpired(prompt.clone())
+                    }
+                    _ => ClientEvent::PermanentError(e.to_string()),
+                };
+                let _ = events.send(event).await;
                 return Err(e);
             }
 
@@ -551,6 +594,7 @@ mod tests {
             insecure: true,
             protocol: Protocol::AnyConnect,
             realm: String::new(),
+            new_password: None,
         };
         let (tx, rx) = tokio::sync::watch::channel(true); // already shutting down
         let _ = tx;

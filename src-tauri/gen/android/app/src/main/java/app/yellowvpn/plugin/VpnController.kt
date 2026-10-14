@@ -29,6 +29,7 @@ object VpnController {
         certSha256: String = "",
         address: String = "10.0.0.2",
         mtu: Int = 1400,
+        newPass: String = "",
     ) {
         val i = Intent(ctx, YellowVpnService::class.java).apply {
             action = YellowVpnService.ACTION_CONNECT
@@ -36,6 +37,7 @@ object VpnController {
             putExtra("port", port)
             putExtra("user", user)
             putExtra("pass", pass)
+            putExtra("newPass", newPass)
             putExtra("protocol", protocol)
             putExtra("insecure", insecure)
             putExtra("certSha256", certSha256)
@@ -53,6 +55,12 @@ object VpnController {
     }
 
     fun currentState(): String = YellowVpnService.lastState
+
+    /** Consume-once: the gateway's password-change prompt, or null. */
+    fun takePasswordExpired(): String? = YellowVpnService.takePasswordExpired()
+
+    /** Consume-once: true if the gateway accepted a replacement password. */
+    fun takePasswordChanged(): Boolean = YellowVpnService.takePasswordChanged()
 
     /**
      * Entry called from Rust over JNI (see src-tauri/src/android_vpn.rs).

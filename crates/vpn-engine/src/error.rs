@@ -37,6 +37,12 @@ pub enum VpnError {
     #[error("authentication failed: {0}")]
     AuthFailed(String),
 
+    /// The gateway demands a new password before it will log the user in —
+    /// permanent: retrying with the same credentials cannot succeed. Carries the
+    /// gateway's own prompt text so the UI can show it.
+    #[error("password expired: {prompt}")]
+    PasswordExpired { prompt: String },
+
     /// The peer asked to tear the tunnel down — transient, reconnect.
     ///
     /// Carries the reason the peer gave, so a policy rejection is diagnosable
@@ -63,6 +69,7 @@ impl VpnError {
             VpnError::Config(_)
                 | VpnError::Privilege(_)
                 | VpnError::AuthFailed(_)
+                | VpnError::PasswordExpired { .. }
                 | VpnError::TunUnavailable(_)
         )
     }
@@ -75,6 +82,7 @@ mod tests {
     #[test]
     fn permanent_classification() {
         assert!(VpnError::AuthFailed("bad".into()).is_permanent());
+        assert!(VpnError::PasswordExpired { prompt: "p".into() }.is_permanent());
         assert!(VpnError::Config("x".into()).is_permanent());
         assert!(VpnError::TunUnavailable("no tun".into()).is_permanent());
         assert!(!VpnError::ServerDisconnect("bye".into()).is_permanent());

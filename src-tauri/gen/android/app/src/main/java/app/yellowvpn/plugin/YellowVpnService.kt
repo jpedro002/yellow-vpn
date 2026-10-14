@@ -37,6 +37,26 @@ class YellowVpnService : VpnService() {
         /** Set by VpnPlugin to forward engine state to the WebView. */
         @Volatile
         var stateListener: ((String) -> Unit)? = null
+
+        // Password-rotation notices are sticky and separate from lastState: the engine
+        // ends right after "password_expired", teardown() resets lastState to
+        // "disconnected", and the UI only polls — it would never see the prompt.
+        @Volatile
+        private var passwordExpiredPrompt: String? = null
+        @Volatile
+        private var passwordChanged = false
+
+        fun takePasswordExpired(): String? {
+            val p = passwordExpiredPrompt
+            passwordExpiredPrompt = null
+            return p
+        }
+
+        fun takePasswordChanged(): Boolean {
+            val c = passwordChanged
+            passwordChanged = false
+            return c
+        }
     }
 
     private var tun: ParcelFileDescriptor? = null
@@ -69,11 +89,15 @@ class YellowVpnService : VpnService() {
         val port = intent.getIntExtra("port", 443)
         val user = intent.getStringExtra("user") ?: ""
         val pass = intent.getStringExtra("pass") ?: ""
+        val newPass = intent.getStringExtra("newPass") ?: ""
         val protocol = intent.getIntExtra("protocol", 0)
         val insecure = intent.getBooleanExtra("insecure", false)
         val certSha256 = intent.getStringExtra("certSha256") ?: ""
 
         connectedSince = 0L
+        // A fresh attempt supersedes any unread notice from the previous one.
+        passwordExpiredPrompt = null
+        passwordChanged = false
         // On API 34+ a service declared foregroundServiceType="specialUse" MUST pass
         // the type at runtime, otherwise the FGS starts "without any types" and the
         // notification is not displayed. Pre-34 uses the 2-arg overload.
@@ -104,10 +128,20 @@ class YellowVpnService : VpnService() {
                     return establishTunnel(address, mtu, dns)
                 }
             }
-            VpnBridge.runEngine(host, port, user, pass, protocol, insecure, certSha256, tunBuilder, object : StateCallback {
+            VpnBridge.runEngine(host, port, user, pass, newPass, protocol, insecure, certSha256, tunBuilder, object : StateCallback {
                 override fun onState(state: String) {
                     // Ignore late events from a superseded engine.
                     if (generation != myGen) return
+                    // Rotation notices are not connection states: record them for the
+                    // UI poll and leave lastState / the notification untouched.
+                    if (state.startsWith("password_expired:")) {
+                        passwordExpiredPrompt = state.removePrefix("password_expired:")
+                        return
+                    }
+                    if (state == "password_changed") {
+                        passwordChanged = true
+                        return
+                    }
                     lastState = state
                     if (state == "established" && connectedSince == 0L) {
                         connectedSince = SystemClock.elapsedRealtime()

@@ -22,7 +22,11 @@ mod proto {
 
     /// Build the engine Config from the wire form. Parses the cert fingerprint here
     /// so a bad value is reported before any network work.
-    fn config_from_wire(w: &WireConfig, password: String) -> Result<Config, String> {
+    fn config_from_wire(
+        w: &WireConfig,
+        password: String,
+        new_password: Option<String>,
+    ) -> Result<Config, String> {
         let cert_sha256 = match &w.cert_sha256 {
             Some(s) if !s.trim().is_empty() => {
                 Some(parse_sha256_fingerprint(s).map_err(|e| e.to_string())?)
@@ -43,6 +47,7 @@ mod proto {
                 WireProtocol::FortiGate => Protocol::FortiGate,
             },
             realm: w.realm.clone().unwrap_or_default(),
+            new_password: new_password.filter(|p| !p.is_empty()),
         })
     }
 
@@ -55,6 +60,8 @@ mod proto {
             }
             ClientEvent::Disconnected => ClientMessage::State(WireState::Disconnected),
             ClientEvent::PermanentError(m) => ClientMessage::Error { message: m, permanent: true },
+            ClientEvent::PasswordExpired(prompt) => ClientMessage::PasswordExpired { prompt },
+            ClientEvent::PasswordChanged => ClientMessage::PasswordChanged,
         }
     }
 
@@ -150,8 +157,8 @@ mod proto {
                         }
                     };
                     match cmd {
-                        ClientCommand::Connect { config, password } => {
-                            match config_from_wire(&config, password) {
+                        ClientCommand::Connect { config, password, new_password } => {
+                            match config_from_wire(&config, password, new_password) {
                                 Ok(cfg) => handle_connect(&session, &writer, cfg).await,
                                 Err(msg) => {
                                     send(&writer, &ClientMessage::Error { message: msg, permanent: true }).await;
@@ -194,15 +201,29 @@ mod proto {
                 protocol: WireProtocol::Checkpoint,
                 cert_sha256: None, insecure: true, verbose: false, realm: None,
             };
-            let c = config_from_wire(&w, "pw".into()).unwrap();
+            let c = config_from_wire(&w, "pw".into(), None).unwrap();
             assert_eq!(c.host, "h");
             assert_eq!(c.protocol, Protocol::Checkpoint);
             assert!(c.insecure);
             assert_eq!(c.realm, "", "an absent realm becomes the default realm");
+            assert_eq!(c.new_password, None);
 
             let mut bad = w.clone();
             bad.cert_sha256 = Some("nothex".into());
-            assert!(config_from_wire(&bad, "pw".into()).is_err());
+            assert!(config_from_wire(&bad, "pw".into(), None).is_err());
+        }
+
+        #[test]
+        fn wire_new_password_maps_and_blank_is_dropped() {
+            let w = WireConfig {
+                host: "h".into(), port: 443, username: "u".into(),
+                protocol: WireProtocol::Checkpoint,
+                cert_sha256: None, insecure: false, verbose: false, realm: None,
+            };
+            let c = config_from_wire(&w, "pw".into(), Some("n3w".into())).unwrap();
+            assert_eq!(c.new_password.as_deref(), Some("n3w"));
+            let c = config_from_wire(&w, "pw".into(), Some(String::new())).unwrap();
+            assert_eq!(c.new_password, None);
         }
     }
 }

@@ -38,10 +38,12 @@ fn parse_fingerprint(s: &str) -> Option<[u8; 32]> {
 }
 
 /// Called by Kotlin:
-/// `external fun runEngine(host, port, user, pass, tunFd, cb: StateCallback)`.
+/// `external fun runEngine(host, port, user, pass, newPass, protocol, insecure, cert, tunBuilder, cb)`.
 /// Blocks until the tunnel ends (clean disconnect or permanent error). State
 /// strings — "connecting" / "established" / "reconnecting" / "disconnected" /
-/// "error:<msg>" — are delivered to `cb.onState(String)`.
+/// "error:<msg>" / "password_expired:<prompt>" / "password_changed" — are
+/// delivered to `cb.onState(String)`. `newPass` is empty unless the user is
+/// answering a `password_expired` from the previous run.
 ///
 /// The symbol name MUST match the Kotlin package + class:
 /// `app.yellowvpn.plugin.VpnBridge`.
@@ -53,6 +55,7 @@ pub extern "system" fn Java_app_yellowvpn_plugin_VpnBridge_runEngine(
     port: jint,
     user: JString,
     pass: JString,
+    new_pass: JString,
     protocol: jint,
     insecure: jboolean,
     cert_sha256: JString,
@@ -69,6 +72,7 @@ pub extern "system" fn Java_app_yellowvpn_plugin_VpnBridge_runEngine(
     let host: String = env.get_string(&host).map(Into::into).unwrap_or_default();
     let user: String = env.get_string(&user).map(Into::into).unwrap_or_default();
     let pass: String = env.get_string(&pass).map(Into::into).unwrap_or_default();
+    let new_pass: String = env.get_string(&new_pass).map(Into::into).unwrap_or_default();
     let cert: String = env
         .get_string(&cert_sha256)
         .map(Into::into)
@@ -171,6 +175,7 @@ pub extern "system" fn Java_app_yellowvpn_plugin_VpnBridge_runEngine(
         // on a realm-scoped portal need that follow-up; the default realm works
         // for everyone else.
         realm: String::new(),
+        new_password: if new_pass.is_empty() { None } else { Some(new_pass) },
     };
 
     // Current-thread runtime: keeps every future (incl. the JNI state pump) on
@@ -209,6 +214,8 @@ pub extern "system" fn Java_app_yellowvpn_plugin_VpnBridge_runEngine(
                     ClientEvent::Reconnecting { .. } => "reconnecting".to_string(),
                     ClientEvent::Disconnected => "disconnected".to_string(),
                     ClientEvent::PermanentError(msg) => format!("error:{msg}"),
+                    ClientEvent::PasswordExpired(prompt) => format!("password_expired:{prompt}"),
+                    ClientEvent::PasswordChanged => "password_changed".to_string(),
                 };
                 emit_state(&vm, &cb_global, &s);
             }
@@ -223,8 +230,12 @@ pub extern "system" fn Java_app_yellowvpn_plugin_VpnBridge_runEngine(
         };
         // Drain any remaining events (e.g. the terminal Disconnected) after run ends.
         pump.await;
+        // PasswordExpired already went out as its own state; a second "error:" would
+        // make the UI report a failure for what is a prompt for the user.
         if let Err(e) = res {
-            emit_state(&vm, &cb_global, &format!("error:{e}"));
+            if !matches!(e, crate::error::VpnError::PasswordExpired { .. }) {
+                emit_state(&vm, &cb_global, &format!("error:{e}"));
+            }
         }
     });
 }

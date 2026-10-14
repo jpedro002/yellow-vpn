@@ -102,6 +102,9 @@ type Shared = Arc<Mutex<VpnState>>;
 struct ConnectArgs {
     config: WireConfig,
     password: String,
+    /// Replacement password, set when the user is answering a `PasswordExpired`.
+    #[serde(rename = "newPassword", default)]
+    new_password: Option<String>,
     #[serde(rename = "profileName")]
     profile_name: String,
 }
@@ -135,6 +138,7 @@ async fn vpn_connect(
         let cmd = ClientCommand::Connect {
             config: args.config.clone(),
             password: args.password.clone(),
+            new_password: args.new_password.clone(),
         };
         if pipe::send_command(&mut w, &cmd).await.is_ok() {
             // Pipe is alive and the helper is swapping tunnels under it.
@@ -160,7 +164,11 @@ async fn vpn_connect(
     // writer into state only once it has proven usable.
     pipe::send_command(
         &mut writer,
-        &ClientCommand::Connect { config: args.config, password: args.password },
+        &ClientCommand::Connect {
+            config: args.config,
+            password: args.password,
+            new_password: args.new_password,
+        },
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -198,7 +206,10 @@ async fn vpn_connect(
                             }
                         }
                     }
-                    ClientMessage::Error { permanent: true, .. } => {
+                    // PasswordExpired is terminal too: the engine returned, so the
+                    // tunnel is down until the GUI reconnects with a new password.
+                    ClientMessage::Error { permanent: true, .. }
+                    | ClientMessage::PasswordExpired { .. } => {
                         // The engine will not retry: the tunnel is down, so
                         // stop reporting a stale Connecting/Established
                         // status. (Transient errors leave status alone --
@@ -252,6 +263,8 @@ struct AndroidConnect {
     port: i32,
     username: String,
     password: String,
+    #[serde(rename = "newPassword")]
+    new_password: String,
     protocol: i32,
     insecure: bool,
     #[serde(rename = "certSha256")]
@@ -269,6 +282,7 @@ async fn vpn_connect(app: AppHandle, args: ConnectArgs) -> Result<(), String> {
         port: c.port as i32,
         username: c.username.clone(),
         password: args.password.clone(),
+        new_password: args.new_password.clone().unwrap_or_default(),
         protocol: match c.protocol {
             vpn_ipc::WireProtocol::Checkpoint => 1,
             vpn_ipc::WireProtocol::FortiGate => 2,
@@ -328,6 +342,48 @@ async fn vpn_status(app: AppHandle) -> Result<WireState, String> {
         "connecting" => WireState::Connecting,
         "reconnecting" => WireState::Reconnecting { delay_secs: 0.0 },
         _ => WireState::Disconnected,
+    })
+}
+
+/// Password-rotation notices the frontend would otherwise get as `vpn://state`
+/// events. Desktop receives those events, so this is always empty there; Android
+/// polls it because plugin events are ACL-blocked.
+#[derive(serde::Serialize, Default)]
+struct VpnNotice {
+    #[serde(rename = "passwordExpired")]
+    password_expired: Option<String>,
+    #[serde(rename = "passwordChanged")]
+    password_changed: bool,
+}
+
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+async fn vpn_notice() -> Result<VpnNotice, String> {
+    Ok(VpnNotice::default())
+}
+
+#[cfg(target_os = "android")]
+#[derive(serde::Deserialize)]
+struct AndroidNotice {
+    #[serde(rename = "passwordExpired")]
+    password_expired: Option<String>,
+    #[serde(rename = "passwordChanged", default)]
+    password_changed: bool,
+}
+
+// Consume-once: the Kotlin service clears each field as it is read.
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn vpn_notice(app: AppHandle) -> Result<VpnNotice, String> {
+    let handle = app
+        .try_state::<tauri::plugin::PluginHandle<tauri::Wry>>()
+        .ok_or_else(|| "VPN plugin not initialized".to_string())?;
+    let n = handle
+        .run_mobile_plugin::<AndroidNotice>("notice", ())
+        .map_err(|e| e.to_string())?;
+    Ok(VpnNotice {
+        password_expired: n.password_expired,
+        password_changed: n.password_changed,
     })
 }
 
@@ -437,6 +493,7 @@ pub fn run() {
             vpn_connect,
             vpn_disconnect,
             vpn_status,
+            vpn_notice,
             ensure_wintun,
             profiles_list,
             profile_create,
